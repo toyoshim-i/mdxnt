@@ -1,24 +1,24 @@
 use std::collections::HashMap;
-use std::sync::RwLock;
 
 use mdxnt_core::{analyze, AnalysisResult, Severity, TokenKind};
+use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 const SEMANTIC_TOKEN_LEGEND: &[SemanticTokenType] = &[
-    SemanticTokenType::COMMENT,      // 0: Comment
-    SemanticTokenType::MACRO,        // 1: Directive (#tempo)
-    SemanticTokenType::NAMESPACE,    // 2: Channel (A..F)
-    SemanticTokenType::CLASS,        // 3: VoiceDef (@0 = {...})
-    SemanticTokenType::VARIABLE,     // 4: Note (c..b)
-    SemanticTokenType::PARAMETER,    // 5: Rest (r)
-    SemanticTokenType::OPERATOR,     // 6: Octave (o, <, >)
-    SemanticTokenType::NUMBER,       // 7: Length / Number
-    SemanticTokenType::KEYWORD,      // 8: Tempo / Loop / Repeat
-    SemanticTokenType::FUNCTION,     // 9: VoiceSelect (@N)
-    SemanticTokenType::PROPERTY,     // 10: Volume / Gate / Tie
-    SemanticTokenType::DECORATOR,    // 11: Modulation / Mixer (D, _, M, P, w)
+    SemanticTokenType::COMMENT,   // 0: Comment
+    SemanticTokenType::MACRO,     // 1: Directive (#tempo)
+    SemanticTokenType::NAMESPACE, // 2: Channel (A..F)
+    SemanticTokenType::CLASS,     // 3: VoiceDef (@0 = {...})
+    SemanticTokenType::VARIABLE,  // 4: Note (c..b)
+    SemanticTokenType::PARAMETER, // 5: Rest (r)
+    SemanticTokenType::OPERATOR,  // 6: Octave (o, <, >)
+    SemanticTokenType::NUMBER,    // 7: Length / Number
+    SemanticTokenType::KEYWORD,   // 8: Tempo / Loop / Repeat
+    SemanticTokenType::FUNCTION,  // 9: VoiceSelect (@N)
+    SemanticTokenType::PROPERTY,  // 10: Volume / Gate / Tie
+    SemanticTokenType::DECORATOR, // 11: Modulation / Mixer (D, _, M, P, w)
 ];
 
 fn token_type_index(kind: TokenKind) -> u32 {
@@ -56,7 +56,7 @@ impl Backend {
         }
     }
 
-    async fn update_document(&self, uri: Url, text: String) {
+    async fn update_document(&self, uri: Url, text: String, version: Option<i32>) {
         let analysis = analyze(&text);
         let lsp_diags: Vec<Diagnostic> = analysis
             .diagnostics
@@ -83,13 +83,50 @@ impl Backend {
             .collect();
 
         {
-            let mut map = self.docs.write().unwrap();
+            let mut map = self.docs.write().await;
             map.insert(uri.clone(), DocState { text, analysis });
         }
 
         self.client
-            .publish_diagnostics(uri, lsp_diags, None)
+            .publish_diagnostics(uri, lsp_diags, version)
             .await;
+    }
+}
+
+/// Convert a UTF-16 column offset on a line into a `char` index, returning `None` if past EOL.
+fn utf16_col_to_char_idx(chars: &[char], utf16_col: u32) -> Option<usize> {
+    let mut acc = 0u32;
+    for (idx, &ch) in chars.iter().enumerate() {
+        let w = ch.len_utf16() as u32;
+        if utf16_col < acc + w {
+            return Some(idx);
+        }
+        acc += w;
+    }
+    None
+}
+
+/// Returns `(prefix_start, prefix_end_excl, has_fm, has_ssg)` if the line starts with `[A-F]+\s`.
+fn parse_channel_prefix(chars: &[char]) -> Option<(usize, usize, bool, bool)> {
+    let mut s = 0;
+    while s < chars.len() && matches!(chars[s], ' ' | '\t') {
+        s += 1;
+    }
+    let mut e = s;
+    let mut has_fm = false;
+    let mut has_ssg = false;
+    while e < chars.len() && matches!(chars[e], 'A'..='F') {
+        if matches!(chars[e], 'A'..='C') {
+            has_fm = true;
+        } else {
+            has_ssg = true;
+        }
+        e += 1;
+    }
+    if e > s && e < chars.len() && matches!(chars[e], ' ' | '\t') {
+        Some((s, e, has_fm, has_ssg))
+    } else {
+        None
     }
 }
 
@@ -97,26 +134,32 @@ fn hover_doc_for_position(doc: &DocState, pos: Position) -> Option<String> {
     let line_str = doc.text.split('\n').nth(pos.line as usize)?;
     let line_clean = line_str.strip_suffix('\r').unwrap_or(line_str);
     let chars: Vec<char> = line_clean.chars().collect();
-    let col = (pos.character as usize).min(chars.len().saturating_sub(1));
-    if chars.is_empty() {
-        return None;
-    }
+    let col = utf16_col_to_char_idx(&chars, pos.character)?;
 
-    // Check if hovering on `@N`
+    // Ignore comments (anything at or after ';')
+    if let Some(semi_idx) = chars.iter().position(|&c| c == ';') {
+        if col >= semi_idx {
+            return None;
+        }
+    }
+    let code_chars = match chars.iter().position(|&c| c == ';') {
+        Some(semi_idx) => &chars[..semi_idx],
+        None => &chars[..],
+    };
+
+    let ch_prefix = parse_channel_prefix(code_chars);
+    let is_ssg_only = matches!(ch_prefix, Some((_, _, false, true)));
+
+    // Check if hovering on `@t<N>`, `@q<N>`, or `@<N>`
     let mut start = col;
-    while start > 0 && (chars[start].is_ascii_digit() || chars[start] == 't' || chars[start] == 'q')
-    {
-        if chars[start - 1] == '@' {
-            start -= 1;
-            break;
-        }
-        if !chars[start - 1].is_ascii_digit() {
-            break;
-        }
+    while start > 0 && code_chars[start].is_ascii_digit() {
         start -= 1;
     }
-    if chars[start] == '@' {
-        let rest: String = chars[start + 1..].iter().collect();
+    if matches!(code_chars[start], 't' | 'q') && start > 0 && code_chars[start - 1] == '@' {
+        start -= 1;
+    }
+    if code_chars[start] == '@' {
+        let rest: String = code_chars[start + 1..].iter().collect();
         if rest.starts_with('t') {
             return Some("**`@t<N>`** — Set raw YM2203 Timer-B register value (`0..255`).".into());
         }
@@ -128,7 +171,22 @@ fn hover_doc_for_position(doc: &DocState, pos: Position) -> Option<String> {
         }
         let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(vnum) = digits.parse::<usize>() {
-            if let Some(v) = doc.analysis.voices.get(&vnum) {
+            if is_ssg_only {
+                if vnum < 6 {
+                    let ssg_desc = match vnum {
+                        0 => "Flat organ / SE sustain",
+                        1 => "Bright synth lead / strings",
+                        2 => "Punchy bass / pluck",
+                        3 => "Expressive melody / bell-lead",
+                        4 => "Soft pad / chord",
+                        5 => "Short percussive hi-hat / snare noise",
+                        _ => "",
+                    };
+                    return Some(format!(
+                        "**SSG Envelope `@{vnum}`** (built-in for channels D–F)\n\n{ssg_desc}"
+                    ));
+                }
+            } else if let Some(v) = doc.analysis.voices.get(&vnum) {
                 return Some(format!(
                     "**FM Voice `@{vnum}`** (line {})\n\n- Format: {}\n- Feedback (FB): `{}`\n- Algorithm (CON): `{}`",
                     v.def_line + 1,
@@ -136,8 +194,7 @@ fn hover_doc_for_position(doc: &DocState, pos: Position) -> Option<String> {
                     v.fb,
                     v.con
                 ));
-            }
-            if vnum < 6 {
+            } else if vnum < 6 {
                 let ssg_desc = match vnum {
                     0 => "Flat organ / SE sustain",
                     1 => "Bright synth lead / strings",
@@ -154,18 +211,23 @@ fn hover_doc_for_position(doc: &DocState, pos: Position) -> Option<String> {
         }
     }
 
-    let c = chars[col];
+    let in_channel_prefix = matches!(ch_prefix, Some((s, e, _, _)) if col >= s && col < e);
+    let c = code_chars[col];
     let doc_text = match c {
         '#' => "**`#tempo <BPM>`** — Set initial song tempo (`30..300` BPM).",
-        'A' | 'B' | 'C' => "**FM Channel (`A`–`C`)** — YM2203 4-operator FM channels 1–3.",
+        'A' | 'B' | 'C' if in_channel_prefix => {
+            "**FM Channel (`A`–`C`)** — YM2203 4-operator FM channels 1–3."
+        }
         'D' => {
-            if col == 0 {
+            if in_channel_prefix {
                 "**SSG Channel (`D`–`F`)** — YM2203 SSG channels A–C."
             } else {
                 "**`D[+-]<N>`** — Detune offset (signed 16-bit F-num / SSG TP delta)."
             }
         }
-        'E' | 'F' => "**SSG Channel (`D`–`F`)** — YM2203 SSG channels A–C.",
+        'E' | 'F' if in_channel_prefix => {
+            "**SSG Channel (`D`–`F`)** — YM2203 SSG channels A–C."
+        }
         't' => "**`t<BPM>`** — Set tempo in BPM (`30..300`), converted to YM2203 Timer-B.",
         'o' => "**`o<0..7>`** — Set current octave.",
         '<' => "**`<`** — Octave down (`-1`).",
@@ -236,20 +298,28 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        self.update_document(params.text_document.uri, params.text_document.text)
-            .await;
+        self.update_document(
+            params.text_document.uri,
+            params.text_document.text,
+            Some(params.text_document.version),
+        )
+        .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.into_iter().last() {
-            self.update_document(params.text_document.uri, change.text)
-                .await;
+            self.update_document(
+                params.text_document.uri,
+                change.text,
+                Some(params.text_document.version),
+            )
+            .await;
         }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         {
-            let mut map = self.docs.write().unwrap();
+            let mut map = self.docs.write().await;
             map.remove(&params.text_document.uri);
         }
         self.client
@@ -261,7 +331,7 @@ impl LanguageServer for Backend {
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
-        let map = self.docs.read().unwrap();
+        let map = self.docs.read().await;
         let Some(doc) = map.get(&params.text_document.uri) else {
             return Ok(None);
         };
@@ -294,7 +364,7 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        let map = self.docs.read().unwrap();
+        let map = self.docs.read().await;
         let Some(doc) = map.get(&params.text_document_position_params.text_document.uri) else {
             return Ok(None);
         };
@@ -359,7 +429,7 @@ impl LanguageServer for Backend {
             },
         ];
 
-        let map = self.docs.read().unwrap();
+        let map = self.docs.read().await;
         if let Some(doc) = map.get(&params.text_document_position.text_document.uri) {
             for v in doc.analysis.voices.values() {
                 items.push(CompletionItem {

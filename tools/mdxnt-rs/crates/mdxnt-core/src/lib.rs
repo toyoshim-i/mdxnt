@@ -51,12 +51,32 @@ D @3 o5 l16 v11 c%0 d4 M4,2,8,3 & v15 e4
             ("FM voice OOB with voices", format!("{v0}A @1 c4")),
             ("FM voice OOB with 0 voices", "A @0 c4".to_string()),
             ("SSG envelope OOB", "D @6 c4".to_string()),
+            ("FM voice ID > 255", "@256 = {0,0, 31,0,0,0,0,0,0,1,0, 31,0,0,0,0,0,0,1,0, 31,0,0,0,0,0,0,1,0, 31,0,0,0,0,0,0,1,0}\nA c4".to_string()),
+            ("Detune i16 overflow", "A D40000 c4".to_string()),
+            ("Sweep i16 overflow", "A _-40000 c4".to_string()),
+            ("Note ticks overflow", "A c%2147483647^%2147483647".to_string()),
         ];
         for (name, src) in cases {
             assert!(
                 compile_mml(&src).is_err(),
                 "Expected error for case: {name}"
             );
+        }
+    }
+
+    #[test]
+    fn test_tempo_parity_and_non_overlapping_tokens() {
+        let a = analyze("#tempo -120\nA c4\n");
+        assert_eq!(a.init_tb, bpm_to_timer_b(120));
+
+        let b = analyze("#tempo 150bpm\nA c4\n");
+        assert_eq!(b.init_tb, bpm_to_timer_b(150));
+
+        let c = analyze("#title @0 = { 1, 2 } suffix\nA c4\n");
+        for w in c.tokens.windows(2) {
+            if w[0].line == w[1].line {
+                assert!(w[0].start_col + w[0].length <= w[1].start_col);
+            }
         }
     }
 }

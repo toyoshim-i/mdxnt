@@ -66,11 +66,26 @@ fn main() {
                 }
                 out_path = Some(PathBuf::from(&args[i]));
             }
+            arg if arg.starts_with("--out=") => {
+                out_path = Some(PathBuf::from(&arg["--out=".len()..]));
+            }
+            arg if arg.starts_with("-o") && arg.len() > 2 => {
+                out_path = Some(PathBuf::from(&arg[2..]));
+            }
+            arg if arg.starts_with('-') && arg != "-" => {
+                eprintln!("error: unknown option: {arg}");
+                process::exit(2);
+            }
             other => inputs.push(other.to_string()),
         }
         i += 1;
     }
 
+    let mode_count = usize::from(header_mode) + usize::from(stdout_mode) + usize::from(check_mode);
+    if mode_count > 1 {
+        eprintln!("error: --header, --stdout, and --check are mutually exclusive");
+        process::exit(2);
+    }
     if inputs.is_empty() {
         eprintln!("error: no input files specified");
         process::exit(2);

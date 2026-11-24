@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use crate::diagnostic::{Diagnostic, SemanticToken, Span, TokenKind};
 use crate::voice::{pack_opn_voice, VoiceInfo, DEFAULT_VOICE};
@@ -6,6 +6,8 @@ use crate::voice::{pack_opn_voice, VoiceInfo, DEFAULT_VOICE};
 pub const TPQ: i32 = 48;
 pub const WHOLE_TICKS: i32 = TPQ * 4;
 pub const MAX_REP_DEPTH: usize = 4;
+pub const MAX_VOICE_ID: usize = 255;
+pub const MAX_NOTE_TICKS: i32 = 65536;
 
 pub fn bpm_to_timer_b(bpm: i32) -> u8 {
     let bpm = bpm.clamp(30, 300) as f64;
@@ -88,7 +90,7 @@ fn span_of(chars: &[SrcChar], start: usize, end_excl: usize) -> Span {
         start_line: chars[s].line,
         start_col: chars[s].col,
         end_line: chars[e].line,
-        end_col: chars[e].col + 1,
+        end_col: chars[e].col + chars[e].ch.len_utf16() as u32,
     }
 }
 
@@ -103,22 +105,23 @@ fn emit_token_range(
         return;
     }
     let end = end_excl.min(chars.len());
-    // Split across lines if a token ever crosses a newline (rare for MML)
     let mut seg_start = start;
     while seg_start < end {
         let line = chars[seg_start].line;
         let col0 = chars[seg_start].col;
         let mut seg_end = seg_start + 1;
+        let mut utf16_len = chars[seg_start].ch.len_utf16() as u32;
         while seg_end < end
             && chars[seg_end].line == line
-            && chars[seg_end].col == chars[seg_end - 1].col + 1
+            && chars[seg_end].col == col0 + utf16_len
         {
+            utf16_len += chars[seg_end].ch.len_utf16() as u32;
             seg_end += 1;
         }
         tokens.push(SemanticToken {
             line,
             start_col: col0,
-            length: (seg_end - seg_start) as u32,
+            length: utf16_len,
             kind,
         });
         seg_start = seg_end;
@@ -224,7 +227,7 @@ fn compile_channel(
                 i += 1;
                 match parse_length(chars, i, def_ticks) {
                     Ok((t2, next_i2)) => {
-                        ticks += t2;
+                        ticks = ticks.saturating_add(t2);
                         i = next_i2;
                     }
                     Err(d) => {
@@ -234,21 +237,28 @@ fn compile_channel(
                 }
             }
             emit_token_range(tokens, chars, tok_start, i, TokenKind::Note);
+            if ticks > MAX_NOTE_TICKS {
+                diagnostics.push(Diagnostic::error(
+                    span_of(chars, tok_start, i),
+                    format!("Note duration {ticks} ticks exceeds maximum ({MAX_NOTE_TICKS})"),
+                ));
+                continue;
+            }
             while ticks > 256 {
                 out.push(0x80 + note);
                 out.push(255);
                 out.push(0xF7);
                 ticks -= 256;
-                total_ticks += 256;
+                total_ticks = total_ticks.saturating_add(256);
                 if loop_abs_off != 0 {
-                    loop_ticks += 256;
+                    loop_ticks = loop_ticks.saturating_add(256);
                 }
             }
             out.push(0x80 + note);
             out.push((ticks - 1) as u8);
-            total_ticks += ticks as u32;
+            total_ticks = total_ticks.saturating_add(ticks as u32);
             if loop_abs_off != 0 {
-                loop_ticks += ticks as u32;
+                loop_ticks = loop_ticks.saturating_add(ticks as u32);
             }
             continue;
         }
@@ -270,7 +280,7 @@ fn compile_channel(
                 i += 1;
                 match parse_length(chars, i, def_ticks) {
                     Ok((t2, next_i2)) => {
-                        ticks += t2;
+                        ticks = ticks.saturating_add(t2);
                         i = next_i2;
                     }
                     Err(d) => {
@@ -280,18 +290,25 @@ fn compile_channel(
                 }
             }
             emit_token_range(tokens, chars, tok_start, i, TokenKind::Rest);
+            if ticks > MAX_NOTE_TICKS {
+                diagnostics.push(Diagnostic::error(
+                    span_of(chars, tok_start, i),
+                    format!("Rest duration {ticks} ticks exceeds maximum ({MAX_NOTE_TICKS})"),
+                ));
+                continue;
+            }
             while ticks > 128 {
                 out.push(127);
                 ticks -= 128;
-                total_ticks += 128;
+                total_ticks = total_ticks.saturating_add(128);
                 if loop_abs_off != 0 {
-                    loop_ticks += 128;
+                    loop_ticks = loop_ticks.saturating_add(128);
                 }
             }
             out.push((ticks - 1) as u8);
-            total_ticks += ticks as u32;
+            total_ticks = total_ticks.saturating_add(ticks as u32);
             if loop_abs_off != 0 {
-                loop_ticks += ticks as u32;
+                loop_ticks = loop_ticks.saturating_add(ticks as u32);
             }
             continue;
         }
@@ -479,9 +496,20 @@ fn compile_channel(
                     format!("Loop point 'L' is not allowed inside '[...]' repeat in ch {ch_idx}"),
                 ));
             } else {
-                loop_abs_off = (base_off + out.len()) as u16;
-                loop_src_idx = i;
-                loop_ticks = 0;
+                let abs_off = base_off + out.len();
+                match u16::try_from(abs_off) {
+                    Ok(off16) => {
+                        loop_abs_off = off16;
+                        loop_src_idx = i;
+                        loop_ticks = 0;
+                    }
+                    Err(_) => {
+                        diagnostics.push(Diagnostic::error(
+                            span_of(chars, i, i + 1),
+                            format!("Loop offset {abs_off} exceeds 16-bit .mdxt limit (65535 B)"),
+                        ));
+                    }
+                }
             }
             emit_token_range(tokens, chars, i, i + 1, TokenKind::Loop);
             i += 1;
@@ -543,15 +571,35 @@ fn compile_channel(
                 }
                 out[frame.start_pos + 1] = cnt.clamp(1, 255) as u8;
                 let end_cmd_pos = out.len();
-                let rel = ((frame.start_pos + 3) as isize - (end_cmd_pos + 3) as isize) as i16;
-                out.push(0xF5);
-                out.extend_from_slice(&rel.to_le_bytes());
+                let rel_isize = (frame.start_pos + 3) as isize - (end_cmd_pos + 3) as isize;
+                match i16::try_from(rel_isize) {
+                    Ok(rel) => {
+                        out.push(0xF5);
+                        out.extend_from_slice(&rel.to_le_bytes());
+                    }
+                    Err(_) => {
+                        diagnostics.push(Diagnostic::error(
+                            span_of(chars, frame.start_src_idx, i),
+                            "Repeat block size exceeds signed 16-bit relative jump limit",
+                        ));
+                    }
+                }
                 let after_end = out.len();
                 for ep in frame.escapes {
-                    let erel = (after_end as isize - (ep + 3) as isize) as i16;
-                    let b = erel.to_le_bytes();
-                    out[ep + 1] = b[0];
-                    out[ep + 2] = b[1];
+                    let erel_isize = after_end as isize - (ep + 3) as isize;
+                    match i16::try_from(erel_isize) {
+                        Ok(erel) => {
+                            let b = erel.to_le_bytes();
+                            out[ep + 1] = b[0];
+                            out[ep + 2] = b[1];
+                        }
+                        Err(_) => {
+                            diagnostics.push(Diagnostic::error(
+                                span_of(chars, frame.start_src_idx, i),
+                                "Repeat escape '/' jump exceeds signed 16-bit limit",
+                            ));
+                        }
+                    }
                 }
             } else {
                 diagnostics.push(Diagnostic::error(
@@ -567,10 +615,20 @@ fn compile_channel(
             let tok_start = i;
             i += 1;
             if let Some((val, next_i)) = parse_int(chars, i) {
-                out.push(0xF3);
-                out.extend_from_slice(&(val as i16).to_le_bytes());
                 i = next_i;
                 emit_token_range(tokens, chars, tok_start, i, TokenKind::Modulation);
+                match i16::try_from(val) {
+                    Ok(v16) => {
+                        out.push(0xF3);
+                        out.extend_from_slice(&v16.to_le_bytes());
+                    }
+                    Err(_) => {
+                        diagnostics.push(Diagnostic::error(
+                            span_of(chars, tok_start, i),
+                            format!("Detune value {val} out of signed 16-bit range (-32768..32767)"),
+                        ));
+                    }
+                }
             } else {
                 diagnostics.push(Diagnostic::error(
                     span_of(chars, tok_start, i),
@@ -585,10 +643,20 @@ fn compile_channel(
             let tok_start = i;
             i += 1;
             if let Some((val, next_i)) = parse_int(chars, i) {
-                out.push(0xF2);
-                out.extend_from_slice(&(val as i16).to_le_bytes());
                 i = next_i;
                 emit_token_range(tokens, chars, tok_start, i, TokenKind::Modulation);
+                match i16::try_from(val) {
+                    Ok(v16) => {
+                        out.push(0xF2);
+                        out.extend_from_slice(&v16.to_le_bytes());
+                    }
+                    Err(_) => {
+                        diagnostics.push(Diagnostic::error(
+                            span_of(chars, tok_start, i),
+                            format!("Pitch sweep value {val} out of signed 16-bit range (-32768..32767)"),
+                        ));
+                    }
+                }
             } else {
                 diagnostics.push(Diagnostic::error(
                     span_of(chars, tok_start, i),
@@ -756,7 +824,10 @@ pub fn analyze(text: &str) -> AnalysisResult {
         flat.push(SrcChar {
             ch: '\n',
             line: line_no,
-            col: line_chars.last().map(|&(_, c)| c + 1).unwrap_or(0),
+            col: line_chars
+                .last()
+                .map(|&(ch, c)| c + ch.len_utf16() as u32)
+                .unwrap_or(0),
         });
     }
 
@@ -802,25 +873,32 @@ pub fn analyze(text: &str) -> AnalysisResult {
                                     q += 1;
                                 }
                             }
-                            match pack_opn_voice(&nums) {
-                                Ok((bytes, fb, con, format)) => {
-                                    voices.insert(
-                                        vnum as usize,
-                                        VoiceInfo {
-                                            id: vnum as usize,
-                                            format,
-                                            fb,
-                                            con,
-                                            bytes,
-                                            def_line: flat[at_idx].line,
-                                        },
-                                    );
-                                }
-                                Err(msg) => {
-                                    diagnostics.push(Diagnostic::error(
-                                        span_of(&flat, at_idx, cb + 1),
-                                        msg,
-                                    ));
+                            if (vnum as usize) > MAX_VOICE_ID {
+                                diagnostics.push(Diagnostic::error(
+                                    span_of(&flat, at_idx, after_num),
+                                    format!("FM voice ID @{vnum} exceeds maximum ({MAX_VOICE_ID})"),
+                                ));
+                            } else {
+                                match pack_opn_voice(&nums) {
+                                    Ok((bytes, fb, con, format)) => {
+                                        voices.insert(
+                                            vnum as usize,
+                                            VoiceInfo {
+                                                id: vnum as usize,
+                                                format,
+                                                fb,
+                                                con,
+                                                bytes,
+                                                def_line: flat[at_idx].line,
+                                            },
+                                        );
+                                    }
+                                    Err(msg) => {
+                                        diagnostics.push(Diagnostic::error(
+                                            span_of(&flat, at_idx, cb + 1),
+                                            msg,
+                                        ));
+                                    }
                                 }
                             }
                             // Blank out the voice definition (keeping newlines)
@@ -872,8 +950,13 @@ pub fn analyze(text: &str) -> AnalysisResult {
                 let lower = line_str.to_ascii_lowercase();
                 if let Some(rest) = lower.strip_prefix("#tempo") {
                     if rest.starts_with(|c: char| c.is_ascii_whitespace()) {
-                        if let Some(num_str) = rest.split_whitespace().next() {
-                            if let Ok(bpm) = num_str.parse::<i32>() {
+                        let trimmed_rest = rest.trim_start();
+                        let digits: String = trimmed_rest
+                            .chars()
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect();
+                        if !digits.is_empty() {
+                            if let Ok(bpm) = digits.parse::<i32>() {
                                 init_tb = bpm_to_timer_b(bpm);
                             }
                         }
@@ -936,7 +1019,15 @@ pub fn analyze(text: &str) -> AnalysisResult {
     for ci in 0..6 {
         let has_content = ch_mml[ci].iter().any(|sc| !sc.ch.is_ascii_whitespace());
         if has_content {
-            ch_offs[ci] = cur_off as u16;
+            match u16::try_from(cur_off) {
+                Ok(off16) => ch_offs[ci] = off16,
+                Err(_) => {
+                    diagnostics.push(Diagnostic::error(
+                        span_of(&ch_mml[ci], 0, 1),
+                        format!("Channel {ci} offset {cur_off} exceeds 16-bit .mdxt limit (65535 B)"),
+                    ));
+                }
+            }
             let (cb, ticks) = compile_channel(
                 &ch_mml[ci],
                 ci,
@@ -951,10 +1042,21 @@ pub fn analyze(text: &str) -> AnalysisResult {
         }
     }
 
-    // Sort & deduplicate semantic tokens (important when channels share a line like `AB c4 d4`)
+    // Sort & remove duplicate/overlapping semantic tokens (required by LSP spec)
     tokens.sort_by_key(|t| (t.line, t.start_col, t.length));
-    let mut seen: HashSet<(u32, u32)> = HashSet::new();
-    tokens.retain(|t| seen.insert((t.line, t.start_col)));
+    let mut non_overlapping: Vec<SemanticToken> = Vec::with_capacity(tokens.len());
+    for tok in tokens {
+        if tok.length == 0 {
+            continue;
+        }
+        if let Some(prev) = non_overlapping.last() {
+            if prev.line == tok.line && tok.start_col < prev.start_col + prev.length {
+                continue;
+            }
+        }
+        non_overlapping.push(tok);
+    }
+    let tokens = non_overlapping;
 
     let binary = if diagnostics.is_empty() {
         let mut out = Vec::with_capacity(cur_off);
