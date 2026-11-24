@@ -7,3 +7,9 @@ build/
 *.o
 __pycache__/
 *.pyc
+tools/mdxnt-rs/target/
+tools/mdxnt-wasm/build/
+tools/code/node_modules/
+tools/code/out/
+tools/code/media/mdxnt_player.wasm
+*.vsix

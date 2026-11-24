@@ -1,0 +1,134 @@
+{
+  "name": "mdxnt-mml",
+  "displayName": "mdxnt MML (YM2203 OPN)",
+  "description": "MML language support (LSP + syntax highlighting) and instant WebAudio + Wasm YM2203 OPN player for mdxnt.",
+  "version": "0.1.0",
+  "publisher": "mdxnt",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:mdxnt-mml",
+    "onCommand:mdxnt.openPlayer"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "mdxnt-mml",
+        "aliases": [
+          "mdxnt MML",
+          "MML"
+        ],
+        "extensions": [
+          ".mml"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mdxnt-mml",
+        "scopeName": "source.mdxnt.mml",
+        "path": "./syntaxes/mdxnt-mml.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "mdxnt.compileAndPlay",
+        "title": "MDXNT: Compile & Play",
+        "icon": "$(play)"
+      },
+      {
+        "command": "mdxnt.stop",
+        "title": "MDXNT: Stop Playback",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "mdxnt.fastForward",
+        "title": "MDXNT: Toggle Fast Forward (4x)",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "mdxnt.compile",
+        "title": "MDXNT: Compile to .mdxt",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "mdxnt.openPlayer",
+        "title": "MDXNT: Open OPN Player"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "mdxnt.compileAndPlay",
+          "when": "resourceLangId == mdxnt-mml",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mdxnt.fastForward",
+          "when": "resourceLangId == mdxnt-mml",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mdxnt.stop",
+          "when": "resourceLangId == mdxnt-mml",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "mdxnt.compileAndPlay",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "editorLangId == mdxnt-mml"
+      },
+      {
+        "command": "mdxnt.stop",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "editorLangId == mdxnt-mml"
+      },
+      {
+        "command": "mdxnt.fastForward",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "editorLangId == mdxnt-mml"
+      }
+    ],
+    "configuration": {
+      "title": "mdxnt",
+      "properties": {
+        "mdxnt.compilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the mdxnt Rust CLI binary. Leave empty to auto-detect."
+        },
+        "mdxnt.lspPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the mdxnt-lsp Language Server binary. Leave empty to auto-detect."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

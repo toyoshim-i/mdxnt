@@ -1,0 +1,110 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "mdxnt MML",
+  "scopeName": "source.mdxnt.mml",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#directive" },
+    { "include": "#voice-def" },
+    { "include": "#channel-prefix" },
+    { "include": "#commands" }
+  ],
+  "repository": {
+    "comment": {
+      "match": ";.*$",
+      "name": "comment.line.semicolon.mdxnt"
+    },
+    "directive": {
+      "match": "^\\s*(#[A-Za-z_][A-Za-z0-9_]*)(.*)$",
+      "captures": {
+        "1": { "name": "keyword.control.directive.mdxnt" },
+        "2": { "name": "constant.numeric.mdxnt" }
+      }
+    },
+    "voice-def": {
+      "begin": "(@\\d+)\\s*(=)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.class.voice.mdxnt" },
+        "2": { "name": "keyword.operator.assignment.mdxnt" },
+        "3": { "name": "punctuation.section.braces.begin.mdxnt" }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.braces.end.mdxnt" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        {
+          "match": "-?\\d+",
+          "name": "constant.numeric.voice-param.mdxnt"
+        }
+      ]
+    },
+    "channel-prefix": {
+      "match": "^\\s*([A-F]+)(?=\\s)",
+      "captures": {
+        "1": { "name": "entity.name.namespace.channel.mdxnt" }
+      }
+    },
+    "commands": {
+      "patterns": [
+        {
+          "match": "@t\\d+|t\\d+",
+          "name": "keyword.control.tempo.mdxnt"
+        },
+        {
+          "match": "@q\\d*|q\\d+",
+          "name": "support.function.gate.mdxnt"
+        },
+        {
+          "match": "@\\d+",
+          "name": "entity.name.function.voice.mdxnt"
+        },
+        {
+          "match": "M[FP]?[+-]?\\d+(?:\\s*,\\s*[+-]?\\d+)*",
+          "name": "support.class.lfo.mdxnt"
+        },
+        {
+          "match": "[D_][+-]?\\d+",
+          "name": "support.class.pitch-mod.mdxnt"
+        },
+        {
+          "match": "[Pw]\\d*",
+          "name": "support.type.mixer.mdxnt"
+        },
+        {
+          "match": "v\\d+|[()]",
+          "name": "variable.parameter.volume.mdxnt"
+        },
+        {
+          "match": "o\\d+|[<>]",
+          "name": "keyword.operator.octave.mdxnt"
+        },
+        {
+          "match": "l(?:%\\d+|\\d+\\.*)",
+          "name": "constant.numeric.length.mdxnt"
+        },
+        {
+          "match": "\\[|/|\\]\\d*",
+          "name": "keyword.control.repeat.mdxnt"
+        },
+        {
+          "match": "L",
+          "name": "keyword.control.loop.mdxnt"
+        },
+        {
+          "match": "[&^]",
+          "name": "keyword.operator.tie.mdxnt"
+        },
+        {
+          "match": "r(?:%\\d+|\\d*\\.*)",
+          "name": "constant.language.rest.mdxnt"
+        },
+        {
+          "match": "[a-g][+#-]*(?:%\\d+|\\d*\\.*)",
+          "name": "variable.other.note.mdxnt"
+        }
+      ]
+    }
+  }
+}
