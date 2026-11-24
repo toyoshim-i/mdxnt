@@ -16,6 +16,7 @@ void mdxnt_shutdown(void);
 /* Play / stop 6-channel BGM (FM ch 0..2, SSG ch 3..5) */
 void mdxnt_play_bgm(const uint8_t *mdxt_data);
 void mdxnt_stop_bgm(void);
+uint8_t mdxnt_bgm_active(void);
 
 /* Play / stop priority SE (uses SSG ch.B/C, auto-restores BGM when done) */
 void mdxnt_play_se(const uint8_t *mdxt_data);

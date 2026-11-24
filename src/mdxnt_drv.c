@@ -849,6 +849,11 @@ void mdxnt_stop_bgm(void)
     mdxnt_leave_crit();
 }
 
+uint8_t mdxnt_bgm_active(void)
+{
+    return bgm_any_active();
+}
+
 void mdxnt_play_se(const uint8_t *mdxt_data)
 {
     uint16_t off_d, off_e;

@@ -7,9 +7,9 @@ YMFM := $(ROOT)/third_party/ymfm/src
 OUT_WASM := $(ROOT)/tools/code/media/mdxnt_player.wasm
 
 COMMON_INC := -I$(ROOT)/include -I$(YMFM) -I.
-WASM_CFLAGS := -O3 -std=c99 -DMDXNT_MOCK_HAL $(COMMON_INC)
-WASM_CXXFLAGS := -O3 -std=c++14 -fno-exceptions -fno-rtti $(COMMON_INC)
-WASM_LDFLAGS := -mexec-model=reactor -Wl,--no-entry -Wl,--gc-sections
+WASM_CFLAGS := -O3 -DNDEBUG -std=c99 -DMDXNT_MOCK_HAL $(COMMON_INC)
+WASM_CXXFLAGS := -O3 -DNDEBUG -std=c++14 -fno-exceptions -fno-rtti $(COMMON_INC)
+WASM_LDFLAGS := -mexec-model=reactor -Wl,--no-entry -Wl,--gc-sections -Wl,--strip-debug
 
 YMFM_SRCS := $(YMFM)/ymfm_opn.cpp $(YMFM)/ymfm_ssg.cpp $(YMFM)/ymfm_adpcm.cpp
 PLAYER_SRCS := ymfm_chip.cpp mdxnt_player.cpp

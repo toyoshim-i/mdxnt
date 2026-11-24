@@ -17,13 +17,16 @@ public:
 class YmfmOpnChip final : public OpnChip {
 public:
     explicit YmfmOpnChip(uint32_t master_clock)
-        : m_clock(master_clock), m_intf(), m_chip(m_intf) {
+        : m_clock(master_clock), m_intf(), m_chip(m_intf),
+          m_ssg_dc_prev_x(0.0f), m_ssg_dc_prev_y(0.0f) {
         m_chip.set_fidelity(ymfm::OPN_FIDELITY_MIN);
         m_chip.reset();
     }
 
     void reset() override {
         m_chip.reset();
+        m_ssg_dc_prev_x = 0.0f;
+        m_ssg_dc_prev_y = 0.0f;
     }
 
     void write(uint8_t reg, uint8_t val) override {
@@ -34,10 +37,15 @@ public:
     float next_native_sample() override {
         ymfm::ym2203::output_data out;
         m_chip.generate(&out, 1);
-        // out.data[0] = FM (3ch mixed), out.data[1..3] = SSG ch A..C
-        // Mix FM and SSG at balanced PC-8801mkIISR levels.
+        // out.data[0] = signed FM (3ch mixed), out.data[1..3] = unipolar SSG ch A..C [0..16382]
         const float fm = static_cast<float>(out.data[0]) / 32768.0f;
-        const float ssg = static_cast<float>(out.data[1] + out.data[2] + out.data[3]) / (32768.0f * 2.5f);
+        const float ssg_raw =
+            static_cast<float>(out.data[1] + out.data[2] + out.data[3]) / (32768.0f * 2.5f);
+        // 1-pole DC-blocking HPF (~13 Hz cutoff at 166.4 kHz) removes SSG unipolar DC offset.
+        const float ssg = ssg_raw - m_ssg_dc_prev_x + 0.9995f * m_ssg_dc_prev_y;
+        m_ssg_dc_prev_x = ssg_raw;
+        m_ssg_dc_prev_y = ssg;
+
         float mixed = (fm * 0.85f + ssg * 0.65f);
         if (mixed > 1.0f) mixed = 1.0f;
         if (mixed < -1.0f) mixed = -1.0f;
@@ -52,17 +60,19 @@ private:
     uint32_t m_clock;
     YmfmOpnInterface m_intf;
     ymfm::ym2203 m_chip;
+    float m_ssg_dc_prev_x;
+    float m_ssg_dc_prev_y;
 };
 
 } // namespace
 
 OpnChip *create_ymfm_opn_chip(uint32_t master_clock) {
     alignas(YmfmOpnChip) static unsigned char storage[sizeof(YmfmOpnChip)];
-    static bool constructed = false;
-    if (constructed) {
-        reinterpret_cast<YmfmOpnChip *>(storage)->reset();
-        return reinterpret_cast<YmfmOpnChip *>(storage);
+    static YmfmOpnChip *instance = nullptr;
+    if (instance) {
+        instance->reset();
+        return instance;
     }
-    constructed = true;
-    return new (storage) YmfmOpnChip(master_clock);
+    instance = new (storage) YmfmOpnChip(master_clock);
+    return instance;
 }
