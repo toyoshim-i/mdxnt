@@ -66,15 +66,19 @@ class MdxntWorkletProcessor extends AudioWorkletProcessor {
             peak: 0,
           });
         } else if (msg.type === 'pause') {
+          this.seq = typeof msg.seq === 'number' ? msg.seq : this.seq + 1;
           this.paused = true;
         } else if (msg.type === 'resume') {
+          this.seq = typeof msg.seq === 'number' ? msg.seq : this.seq + 1;
           this.paused = false;
         } else if (msg.type === 'setSpeed' && this.exports) {
           this.exports.mdxnt_wasm_set_speed(msg.speed | 0);
         } else if (msg.type === 'seek' && this.exports && this.loaded) {
+          const wasPlayingBefore = this.wasPlaying;
           const tick = this.exports.mdxnt_wasm_seek_ticks(Math.max(0, msg.ticks | 0));
           const playing = this.exports.mdxnt_wasm_is_playing() === 1;
           this.wasPlaying = playing;
+          if (!playing) this.paused = false;
           this.port.postMessage({
             type: 'status',
             seq: this.seq,
@@ -82,6 +86,7 @@ class MdxntWorkletProcessor extends AudioWorkletProcessor {
             tb: this.exports.mdxnt_wasm_get_tb(),
             playing,
             paused: this.paused,
+            finished: wasPlayingBefore && !playing,
             peak: 0,
           });
         } else if (msg.type === 'setMuteMask' && this.exports) {

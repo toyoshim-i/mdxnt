@@ -208,9 +208,9 @@
       return;
     }
     try {
-      const wasSuspended = audioCtx && audioCtx.state === 'suspended';
+      const wasNotRunning = !audioCtx || audioCtx.state === 'suspended';
       await ensureAudio(true);
-      if (wasSuspended && isPlaying && !isPaused) {
+      if (wasNotRunning && isPlaying && !isPaused) {
         updatePlayButton();
         setStatus(`Playing ${lastTrack.name} (${currentSpeed / 100}x)`);
         return;
@@ -218,13 +218,16 @@
       if (!isPlaying) {
         await loadAndPlay(lastTrack.name, lastTrack.data, true);
       } else if (isPaused) {
+        const mySeq = ++activeSeq;
         isPaused = false;
-        workletNode.port.postMessage({ type: 'resume' });
+        workletNode.port.postMessage({ type: 'resume', seq: mySeq });
         updatePlayButton();
         setStatus(`Playing ${lastTrack.name} (${currentSpeed / 100}x)`);
       } else {
+        const mySeq = ++activeSeq;
         isPaused = true;
-        workletNode.port.postMessage({ type: 'pause' });
+        workletNode.port.postMessage({ type: 'pause', seq: mySeq });
+        meterBar.style.width = '0%';
         updatePlayButton();
         setStatus('Paused');
       }
