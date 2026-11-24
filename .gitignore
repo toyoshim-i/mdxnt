@@ -1,0 +1,9 @@
+build/
+*.rel
+*.asm
+*.lst
+*.sym
+*.rst
+*.o
+__pycache__/
+*.pyc
