@@ -1,0 +1,53 @@
+; mdxnt demo track — YM2203 (OPN: FM 3ch + SSG 3ch)
+#tempo 132
+
+; @0: Bright FM Synth Lead (MUCOM/OPN 38-int format)
+@0 = {
+  5, 4,
+  31,10, 0, 7, 2,20,0, 1,0,
+  31, 8, 2, 7, 2, 0,0, 1,0,
+  31,10, 0, 7, 2,24,0, 2,0,
+  31, 8, 2, 7, 2, 0,0, 1,0
+}
+
+; @1: Punchy FM Bass
+@1 = {
+  6, 2,
+  31,12, 4, 9, 4,18,0, 1,0,
+  31,14, 5, 9, 5,22,0, 2,0,
+  31,10, 3, 9, 3,16,0, 1,0,
+  31, 8, 2, 8, 2, 0,0, 1,0
+}
+
+; @2: Warm FM Chord Pad
+@2 = {
+  3, 4,
+  18, 6, 1, 5, 2,26,0, 1,0,
+  18, 5, 1, 5, 2, 4,0, 1,0,
+  18, 6, 1, 5, 2,28,0, 2,0,
+  18, 5, 1, 5, 2, 4,0, 1,0
+}
+
+; FM ch 1 — Lead melody
+A @0 o5 l8 v13 q7 M6,2,6,4
+A L [c d e g >c4 <g8. e16 | f e d c d4. r8 | e f g a b4 g8. e16 | d c d e c4 r4]2
+
+; FM ch 2 — Bassline
+B @1 o3 l8 v14 q6
+B L [c c >c <c g g >g <g | f f >f <f g g >g <g | e e >e <e a a >a <a | d d g g c c g4]2
+
+; FM ch 3 — Pad harmony
+C @2 o4 l2 v10 q8 D+2
+C L [e g | a b | g >c | <b >c]2
+
+; SSG ch A — Arpeggio sparkle
+D @3 o5 l16 v10 q6
+D L [c e g >c <g e c e <b >d g b g d <b >d | c f a >c <a f c f <b >d g b g d <b >d]2
+
+; SSG ch B — Sub-counter melody
+E @1 o4 l4 v9 q7
+E L [g e | f g | e a | g e]2
+
+; SSG ch C — Hi-hat / snare noise rhythm
+F @5 o4 l8 v11 P1 w6
+F L [c r w18 v13 c v11 w6 r c c w18 v13 c v11 w6 r]4
