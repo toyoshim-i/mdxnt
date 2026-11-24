@@ -55,6 +55,7 @@ D @3 o5 l16 v11 c%0 d4 M4,2,8,3 & v15 e4
             ("Detune i16 overflow", "A D40000 c4".to_string()),
             ("Sweep i16 overflow", "A _-40000 c4".to_string()),
             ("Note ticks overflow", "A c%2147483647^%2147483647".to_string()),
+            ("Dotted default length overflow", "A l%2000000000 c.".to_string()),
         ];
         for (name, src) in cases {
             assert!(
@@ -71,6 +72,12 @@ D @3 o5 l16 v11 c%0 d4 M4,2,8,3 & v15 e4
 
         let b = analyze("#tempo 150bpm\nA c4\n");
         assert_eq!(b.init_tb, bpm_to_timer_b(150));
+
+        let b_max = analyze("#tempo 99999999999\nA c4\n");
+        assert_eq!(b_max.init_tb, bpm_to_timer_b(300));
+
+        let d = analyze("A l%\n");
+        assert_eq!(d.diagnostics.len(), 1);
 
         let c = analyze("#title @0 = { 1, 2 } suffix\nA c4\n");
         for w in c.tokens.windows(2) {

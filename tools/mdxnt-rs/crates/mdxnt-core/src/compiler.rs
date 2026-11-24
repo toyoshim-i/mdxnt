@@ -159,7 +159,7 @@ fn parse_length(
     let mut add = base;
     while pos < n && chars[pos].ch == '.' {
         add /= 2;
-        ticks += add;
+        ticks = ticks.saturating_add(add);
         pos += 1;
     }
     Ok((ticks.max(1), pos))
@@ -232,6 +232,7 @@ fn compile_channel(
                     }
                     Err(d) => {
                         diagnostics.push(d);
+                        i += 1;
                         break;
                     }
                 }
@@ -285,6 +286,7 @@ fn compile_channel(
                     }
                     Err(d) => {
                         diagnostics.push(d);
+                        i += 1;
                         break;
                     }
                 }
@@ -352,7 +354,10 @@ fn compile_channel(
                     i = next_i;
                     emit_token_range(tokens, chars, tok_start, i, TokenKind::Length);
                 }
-                Err(d) => diagnostics.push(d),
+                Err(d) => {
+                    diagnostics.push(d);
+                    i += 1;
+                }
             }
             continue;
         }
@@ -956,9 +961,8 @@ pub fn analyze(text: &str) -> AnalysisResult {
                             .take_while(|c| c.is_ascii_digit())
                             .collect();
                         if !digits.is_empty() {
-                            if let Ok(bpm) = digits.parse::<i32>() {
-                                init_tb = bpm_to_timer_b(bpm);
-                            }
+                            let bpm = digits.parse::<i32>().unwrap_or(i32::MAX);
+                            init_tb = bpm_to_timer_b(bpm);
                         }
                     }
                 }
