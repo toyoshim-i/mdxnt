@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mdxnt-core",
+    "crates/mdxnt-cli",
+    "crates/mdxnt-lsp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"

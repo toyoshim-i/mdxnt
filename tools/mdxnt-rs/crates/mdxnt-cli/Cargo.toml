@@ -1,0 +1,12 @@
+[package]
+name = "mdxnt-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mdxnt"
+path = "src/main.rs"
+
+[dependencies]
+mdxnt-core = { path = "../mdxnt-core" }
