@@ -62,6 +62,7 @@
   }
 
   function resetPositionUI() {
+    isScrubbing = false;
     currentTick = 0;
     statTick.textContent = '0';
     statBar.textContent = '1 : 1';
@@ -90,12 +91,12 @@
         seekSlider.value = String(m.tick);
         seekVal.textContent = String(m.tick);
       }
-      if (!isPlaying && lastTrack) {
+      if (m.finished && lastTrack) {
         setStatus('Finished');
       }
       updatePlayButton();
     } else if (m.type === 'loaded') {
-      activeSeq = m.seq || activeSeq;
+      if (typeof m.seq === 'number' && m.seq < activeSeq) return;
       if (!m.ok) {
         isPlaying = false;
         isPaused = false;
@@ -175,16 +176,17 @@
   }
 
   async function loadAndPlay(name, dataArray, fromUserGesture = false) {
+    const mySeq = ++activeSeq;
     lastTrack = { name, data: dataArray };
     songTitle.textContent = name;
     sizeLabel.textContent = `${dataArray.length} B`;
     resetPositionUI();
     try {
       await ensureAudio(fromUserGesture);
-      activeSeq++;
+      if (mySeq !== activeSeq) return;
       workletNode.port.postMessage({ type: 'setSpeed', speed: currentSpeed });
       workletNode.port.postMessage({ type: 'setMuteMask', mask: muteMask });
-      workletNode.port.postMessage({ type: 'load', data: dataArray });
+      workletNode.port.postMessage({ type: 'load', seq: mySeq, data: dataArray });
       isPlaying = true;
       isPaused = false;
       updatePlayButton();
@@ -194,6 +196,7 @@
         setStatus(`Playing ${name} (${currentSpeed / 100}x)`);
       }
     } catch (err) {
+      if (mySeq !== activeSeq) return;
       setStatus(`Playback error: ${err.message}`);
       vscode.postMessage({ type: 'error', message: err.message });
     }
@@ -232,9 +235,9 @@
   });
 
   btnStop.addEventListener('click', () => {
-    activeSeq++;
+    const mySeq = ++activeSeq;
     if (workletReady && workletNode) {
-      workletNode.port.postMessage({ type: 'stop' });
+      workletNode.port.postMessage({ type: 'stop', seq: mySeq });
     }
     isPlaying = false;
     isPaused = false;
@@ -265,6 +268,14 @@
     if (workletReady && workletNode && lastTrack) {
       workletNode.port.postMessage({ type: 'seek', ticks: Number(seekSlider.value) });
     }
+  });
+
+  seekSlider.addEventListener('pointerup', () => {
+    isScrubbing = false;
+  });
+
+  seekSlider.addEventListener('blur', () => {
+    isScrubbing = false;
   });
 
   speedButtons.addEventListener('click', (e) => {

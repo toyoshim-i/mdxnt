@@ -27,7 +27,7 @@ class MdxntWorkletProcessor extends AudioWorkletProcessor {
           this.exports.mdxnt_wasm_init(Math.round(sampleRate));
           this.port.postMessage({ type: 'inited' });
         } else if (msg.type === 'load' && this.exports) {
-          this.seq++;
+          this.seq = typeof msg.seq === 'number' ? msg.seq : this.seq + 1;
           const bytes = new Uint8Array(msg.data);
           const cap = this.exports.mdxnt_wasm_get_data_capacity();
           if (bytes.length > cap) {
@@ -51,7 +51,7 @@ class MdxntWorkletProcessor extends AudioWorkletProcessor {
             tb: this.exports.mdxnt_wasm_get_tb(),
           });
         } else if (msg.type === 'stop' && this.exports) {
-          this.seq++;
+          this.seq = typeof msg.seq === 'number' ? msg.seq : this.seq + 1;
           this.exports.mdxnt_wasm_stop();
           this.paused = false;
           this.wasPlaying = false;
@@ -62,6 +62,7 @@ class MdxntWorkletProcessor extends AudioWorkletProcessor {
             tb: this.exports.mdxnt_wasm_get_tb(),
             playing: false,
             paused: false,
+            finished: false,
             peak: 0,
           });
         } else if (msg.type === 'pause') {
@@ -118,6 +119,7 @@ class MdxntWorkletProcessor extends AudioWorkletProcessor {
           tb: this.exports.mdxnt_wasm_get_tb(),
           playing: false,
           paused: false,
+          finished: true,
           peak: 0,
         });
       }
@@ -155,6 +157,7 @@ class MdxntWorkletProcessor extends AudioWorkletProcessor {
         tb: this.exports.mdxnt_wasm_get_tb(),
         playing: playingAfter,
         paused: this.paused,
+        finished: !playingAfter,
         peak: playingAfter ? peak : 0,
       });
     }

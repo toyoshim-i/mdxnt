@@ -479,8 +479,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mdxnt.stop', () => {
-      fastForwardActive = false;
-      updateStatusBar();
+      pendingLoad = undefined;
       playerPanel?.webview.postMessage({ type: 'stop' });
     })
   );
