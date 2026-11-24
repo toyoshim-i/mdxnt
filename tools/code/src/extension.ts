@@ -15,14 +15,33 @@ let pendingLoad: { name: string; data: number[] } | undefined;
 let fastForwardActive = false;
 let statusBarItem: vscode.StatusBarItem | undefined;
 
+function isExecutableFile(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function findBinary(configKey: string, binName: string, context: vscode.ExtensionContext): string | undefined {
   const cfg = vscode.workspace.getConfiguration('mdxnt');
   const configured = cfg.get<string>(configKey)?.trim();
-  if (configured && fs.existsSync(configured)) {
-    return configured;
+  const exe = process.platform === 'win32' ? `${binName}.exe` : binName;
+
+  if (configured) {
+    if (isExecutableFile(configured)) {
+      return configured;
+    }
+    // Also allow bare binary names on PATH
+    if (!configured.includes(path.sep) && !configured.includes('/')) {
+      for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+        const candidate = path.join(dir, configured);
+        if (isExecutableFile(candidate)) return candidate;
+      }
+    }
+    vscode.window.showWarningMessage(`mdxnt.${configKey} is not a valid file: ${configured}`);
   }
 
-  const exe = process.platform === 'win32' ? `${binName}.exe` : binName;
   const candidates: string[] = [];
 
   // Relative to extension directory (tools/code -> tools/mdxnt-rs/target/...)
@@ -35,8 +54,13 @@ function findBinary(configKey: string, binName: string, context: vscode.Extensio
     candidates.push(path.join(folder.uri.fsPath, 'tools', 'mdxnt-rs', 'target', 'debug', exe));
   }
 
+  // Fallback to PATH
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (dir) candidates.push(path.join(dir, exe));
+  }
+
   for (const p of candidates) {
-    if (fs.existsSync(p)) {
+    if (isExecutableFile(p)) {
       return p;
     }
   }
@@ -64,16 +88,38 @@ function compileMmlText(
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    let settled = false;
 
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        proc.kill();
+        reject(new Error('mdxnt compiler timed out after 15s'));
+      }
+    }, 15000);
+
+    proc.stdin.on('error', () => {
+      // Ignore EPIPE if child exits before consuming stdin
+    });
     proc.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
     proc.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-    proc.on('error', (err) => reject(err));
-    proc.on('close', (code) => {
+    proc.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+    proc.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (code === 0) {
         resolve(Buffer.concat(stdoutChunks));
       } else {
         const msg = Buffer.concat(stderrChunks).toString('utf8').trim();
-        reject(new Error(msg || `mdxnt exited with code ${code}`));
+        const reason = signal ? `killed by signal ${signal}` : `exited with code ${code}`;
+        reject(new Error(msg || `mdxnt ${reason}`));
       }
     });
 
@@ -100,7 +146,7 @@ function getWebviewHtml(
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none';
                  style-src ${webview.cspSource} 'unsafe-inline';
-                 script-src 'nonce-${nonce}' ${webview.cspSource};
+                 script-src 'nonce-${nonce}' ${webview.cspSource} 'wasm-unsafe-eval';
                  connect-src ${webview.cspSource} blob:;
                  worker-src ${webview.cspSource} blob:;" />
   <title>mdxnt YM2203 OPN Player</title>
@@ -322,6 +368,9 @@ function ensurePlayerPanel(context: vscode.ExtensionContext): vscode.WebviewPane
         });
         pendingLoad = undefined;
       }
+    } else if (msg.type === 'speedChanged') {
+      fastForwardActive = Number(msg.speed) > 100;
+      updateStatusBar();
     } else if (msg.type === 'error') {
       vscode.window.showErrorMessage(`mdxnt player: ${msg.message}`);
     }
@@ -330,6 +379,7 @@ function ensurePlayerPanel(context: vscode.ExtensionContext): vscode.WebviewPane
   playerPanel.onDidDispose(() => {
     playerPanel = undefined;
     playerReady = false;
+    pendingLoad = undefined;
     fastForwardActive = false;
     updateStatusBar();
   });
@@ -358,14 +408,15 @@ async function startLsp(context: vscode.ExtensionContext) {
     documentSelector: [{ scheme: 'file', language: 'mdxnt-mml' }],
   };
 
-  lspClient = new LanguageClient(
+  const client = new LanguageClient(
     'mdxnt-lsp',
     'mdxnt MML Language Server',
     serverOptions,
     clientOptions
   );
 
-  await lspClient.start();
+  await client.start();
+  lspClient = client;
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -436,9 +487,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mdxnt.fastForward', () => {
+      if (!playerPanel || !playerReady) {
+        return;
+      }
       fastForwardActive = !fastForwardActive;
       updateStatusBar();
-      playerPanel?.webview.postMessage({
+      playerPanel.webview.postMessage({
         type: 'setSpeed',
         speed: fastForwardActive ? 400 : 100,
       });
@@ -474,7 +528,11 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export async function deactivate(): Promise<void> {
+  playerPanel?.dispose();
+  playerPanel = undefined;
   if (lspClient) {
-    await lspClient.stop();
+    const client = lspClient;
+    lspClient = undefined;
+    await client.stop();
   }
 }

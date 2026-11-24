@@ -15,7 +15,7 @@
       "name": "comment.line.semicolon.mdxnt"
     },
     "directive": {
-      "match": "^\\s*(#[A-Za-z_][A-Za-z0-9_]*)(.*)$",
+      "match": "^\\s*(#[A-Za-z_][A-Za-z0-9_]*)([^;]*)",
       "captures": {
         "1": { "name": "keyword.control.directive.mdxnt" },
         "2": { "name": "constant.numeric.mdxnt" }

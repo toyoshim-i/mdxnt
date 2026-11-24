@@ -21,6 +21,7 @@
   let audioCtx = null;
   let workletNode = null;
   let workletReady = false;
+  let initPromise = null;
   let wasmBytes = null;
   let lastTrack = null;
   let isPlaying = false;
@@ -29,6 +30,7 @@
   let currentSpeed = 100;
   let muteMask = 0;
   let isScrubbing = false;
+  let activeSeq = 0;
 
   function setStatus(text) {
     statusMsg.textContent = text;
@@ -41,7 +43,8 @@
   }
 
   function updatePlayButton() {
-    btnPlayPause.textContent = isPlaying && !isPaused ? '⏸ Pause' : '▶ Play';
+    const suspended = audioCtx && audioCtx.state === 'suspended';
+    btnPlayPause.textContent = isPlaying && !isPaused && !suspended ? '⏸ Pause' : '▶ Play';
   }
 
   function updateSpeedUI(speed) {
@@ -58,72 +61,127 @@
     }
   }
 
-  async function ensureAudio() {
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      await audioCtx.audioWorklet.addModule(cfg.workletUrl);
-      workletNode = new AudioWorkletNode(audioCtx, 'mdxnt-opn-processor', {
-        numberOfInputs: 0,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      });
-      workletNode.connect(audioCtx.destination);
+  function resetPositionUI() {
+    currentTick = 0;
+    statTick.textContent = '0';
+    statBar.textContent = '1 : 1';
+    seekSlider.max = '3840';
+    seekSlider.value = '0';
+    seekVal.textContent = '0';
+    meterBar.style.width = '0%';
+  }
 
-      if (!wasmBytes) {
-        const resp = await fetch(cfg.wasmUrl);
-        if (!resp.ok) throw new Error(`Failed to fetch Wasm: ${resp.status}`);
-        wasmBytes = await resp.arrayBuffer();
+  function handleWorkletMessage(m) {
+    if (m.type === 'status') {
+      if (typeof m.seq === 'number' && m.seq < activeSeq) return;
+      currentTick = m.tick;
+      isPlaying = m.playing;
+      if (typeof m.paused === 'boolean') isPaused = m.paused;
+      statTick.textContent = String(m.tick);
+      const bar = Math.floor(m.tick / 192) + 1;
+      const beat = Math.floor((m.tick % 192) / 48) + 1;
+      statBar.textContent = `${bar} : ${beat}`;
+      statBpm.textContent = `${tbToBpm(m.tb)} (${m.tb})`;
+      meterBar.style.width = `${Math.min(100, Math.round(m.peak * 150))}%`;
+      if (!isScrubbing) {
+        if (m.tick > Number(seekSlider.max)) {
+          seekSlider.max = String(Math.ceil((m.tick + 192) / 192) * 192);
+        }
+        seekSlider.value = String(m.tick);
+        seekVal.textContent = String(m.tick);
       }
-
-      await new Promise((resolve, reject) => {
-        workletNode.port.onmessage = (e) => {
-          const m = e.data;
-          if (m.type === 'inited') {
-            workletReady = true;
-            resolve();
-          } else if (m.type === 'status') {
-            currentTick = m.tick;
-            isPlaying = m.playing;
-            statTick.textContent = String(m.tick);
-            const bar = Math.floor(m.tick / 192) + 1;
-            const beat = Math.floor((m.tick % 192) / 48) + 1;
-            statBar.textContent = `${bar} : ${beat}`;
-            statBpm.textContent = `${tbToBpm(m.tb)} (${m.tb})`;
-            meterBar.style.width = `${Math.min(100, Math.round(m.peak * 150))}%`;
-            if (!isScrubbing) {
-              if (m.tick > Number(seekSlider.max)) {
-                seekSlider.max = String(Math.ceil((m.tick + 192) / 192) * 192);
-              }
-              seekSlider.value = String(m.tick);
-              seekVal.textContent = String(m.tick);
-            }
-            updatePlayButton();
-          } else if (m.type === 'loaded') {
-            isPlaying = m.ok;
-            isPaused = false;
-            updatePlayButton();
-          } else if (m.type === 'error') {
-            setStatus(`Error: ${m.message}`);
-            vscode.postMessage({ type: 'error', message: m.message });
-            reject(new Error(m.message));
-          }
-        };
-        // Send a copy so wasmBytes stays reusable if needed
-        workletNode.port.postMessage({ type: 'init', wasmBytes: wasmBytes.slice(0) });
-      });
-    }
-
-    if (audioCtx.state === 'suspended') {
-      await audioCtx.resume();
+      if (!isPlaying && lastTrack) {
+        setStatus('Finished');
+      }
+      updatePlayButton();
+    } else if (m.type === 'loaded') {
+      activeSeq = m.seq || activeSeq;
+      if (!m.ok) {
+        isPlaying = false;
+        isPaused = false;
+        setStatus(`Failed to load: ${m.message || 'invalid .mdxt binary'}`);
+      } else {
+        isPlaying = !!m.playing;
+        isPaused = false;
+        statBpm.textContent = `${tbToBpm(m.tb)} (${m.tb})`;
+      }
+      updatePlayButton();
+    } else if (m.type === 'error') {
+      setStatus(`Error: ${m.message}`);
+      vscode.postMessage({ type: 'error', message: m.message });
     }
   }
 
-  async function loadAndPlay(name, dataArray) {
+  async function ensureAudio(fromUserGesture) {
+    if (!initPromise) {
+      initPromise = (async () => {
+        let ctx = null;
+        try {
+          ctx = new (window.AudioContext || window.webkitAudioContext)();
+          ctx.onstatechange = () => updatePlayButton();
+          await ctx.audioWorklet.addModule(cfg.workletUrl);
+          const node = new AudioWorkletNode(ctx, 'mdxnt-opn-processor', {
+            numberOfInputs: 0,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+          });
+          node.connect(ctx.destination);
+
+          if (!wasmBytes) {
+            const resp = await fetch(cfg.wasmUrl);
+            if (!resp.ok) throw new Error(`Failed to fetch Wasm: ${resp.status}`);
+            wasmBytes = await resp.arrayBuffer();
+          }
+
+          await new Promise((resolve, reject) => {
+            node.port.onmessage = (e) => {
+              const m = e.data;
+              if (m.type === 'inited') {
+                node.port.onmessage = (ev) => handleWorkletMessage(ev.data);
+                resolve();
+              } else if (m.type === 'error') {
+                reject(new Error(m.message));
+              }
+            };
+            node.port.postMessage({ type: 'init', wasmBytes: wasmBytes.slice(0) });
+          });
+
+          audioCtx = ctx;
+          workletNode = node;
+          workletReady = true;
+        } catch (err) {
+          if (ctx) {
+            try { await ctx.close(); } catch (_) {}
+          }
+          audioCtx = null;
+          workletNode = null;
+          workletReady = false;
+          initPromise = null;
+          throw err;
+        }
+      })();
+    }
+
+    await initPromise;
+
+    if (audioCtx && audioCtx.state === 'suspended') {
+      if (fromUserGesture) {
+        await audioCtx.resume();
+      } else {
+        // Never await resume() outside a user gesture; Chromium keeps it pending until clicked.
+        audioCtx.resume().catch(() => {});
+      }
+    }
+  }
+
+  async function loadAndPlay(name, dataArray, fromUserGesture = false) {
     lastTrack = { name, data: dataArray };
     songTitle.textContent = name;
     sizeLabel.textContent = `${dataArray.length} B`;
+    resetPositionUI();
     try {
-      await ensureAudio();
+      await ensureAudio(fromUserGesture);
+      activeSeq++;
       workletNode.port.postMessage({ type: 'setSpeed', speed: currentSpeed });
       workletNode.port.postMessage({ type: 'setMuteMask', mask: muteMask });
       workletNode.port.postMessage({ type: 'load', data: dataArray });
@@ -146,29 +204,41 @@
       setStatus('No track loaded. Use ▶ in an .mml editor.');
       return;
     }
-    await ensureAudio();
-    if (!isPlaying) {
-      loadAndPlay(lastTrack.name, lastTrack.data);
-    } else if (isPaused) {
-      isPaused = false;
-      workletNode.port.postMessage({ type: 'resume' });
-      updatePlayButton();
-      setStatus(`Playing ${lastTrack.name}`);
-    } else {
-      isPaused = true;
-      workletNode.port.postMessage({ type: 'pause' });
-      updatePlayButton();
-      setStatus('Paused');
+    try {
+      const wasSuspended = audioCtx && audioCtx.state === 'suspended';
+      await ensureAudio(true);
+      if (wasSuspended && isPlaying && !isPaused) {
+        updatePlayButton();
+        setStatus(`Playing ${lastTrack.name} (${currentSpeed / 100}x)`);
+        return;
+      }
+      if (!isPlaying) {
+        await loadAndPlay(lastTrack.name, lastTrack.data, true);
+      } else if (isPaused) {
+        isPaused = false;
+        workletNode.port.postMessage({ type: 'resume' });
+        updatePlayButton();
+        setStatus(`Playing ${lastTrack.name} (${currentSpeed / 100}x)`);
+      } else {
+        isPaused = true;
+        workletNode.port.postMessage({ type: 'pause' });
+        updatePlayButton();
+        setStatus('Paused');
+      }
+    } catch (err) {
+      setStatus(`Playback error: ${err.message}`);
+      vscode.postMessage({ type: 'error', message: err.message });
     }
   });
 
   btnStop.addEventListener('click', () => {
+    activeSeq++;
     if (workletReady && workletNode) {
       workletNode.port.postMessage({ type: 'stop' });
     }
     isPlaying = false;
     isPaused = false;
-    meterBar.style.width = '0%';
+    resetPositionUI();
     updatePlayButton();
     setStatus('Stopped');
   });
@@ -205,6 +275,7 @@
     if (workletReady && workletNode) {
       workletNode.port.postMessage({ type: 'setSpeed', speed });
     }
+    vscode.postMessage({ type: 'speedChanged', speed });
     setStatus(`Speed: ${speed / 100}x`);
   });
 
@@ -229,7 +300,7 @@
     const msg = event.data;
     if (msg.type === 'load') {
       updateSpeedUI(100);
-      loadAndPlay(msg.name, msg.data);
+      loadAndPlay(msg.name, msg.data, false);
     } else if (msg.type === 'stop') {
       btnStop.click();
     } else if (msg.type === 'setSpeed') {
