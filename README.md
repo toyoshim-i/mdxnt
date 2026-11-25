@@ -1,6 +1,6 @@
 # mdxnt
 
-Clean-room, MIT-licensed **MDX-compatible YM2203 (OPN: FM 3ch + SSG 3ch)** MML compiler and portable C99 sound driver, with a reference Z80 assembly HAL for **NEC PC-8801mkIISR**.
+Clean-room, MIT-licensed **MDX-compatible YM2203 (OPN: FM 3ch + SSG 3ch)** MML compiler and sound driver (portable C99 core + pure Z80 assembly core), with a reference Z80 assembly HAL for **NEC PC-8801mkIISR**.
 
 ## Features
 - **Clean-room MIT license**: Safe for both open-source and commercial retro/homebrew releases.
@@ -10,6 +10,8 @@ Clean-room, MIT-licensed **MDX-compatible YM2203 (OPN: FM 3ch + SSG 3ch)** MML c
   - 4-op FM voices (38-int MUCOM/OPN or 47-int MDX `@N = { ... }` format), logarithmic 16-step FM volume (`FM_VOL_TL`), and accurate YM2203 `CON 0..7` carrier masks.
   - 6 built-in SSG ADSR software envelopes (`@0..@5`) with smooth Release tails, noise mixer (`P0..2`, `w0..31`), detune (`D`), pitch sweep (`_`), software pitch LFO (`M delay,speed,depth,count`), nested repeats (`[ / ]N` up to 4 levels), ties (`&`, `^`), and ratio (`q1..8`) / fixed-tail (`@qN`) gate times.
   - Zero 16-bit software multiply/divide in the Timer-B ISR hot path (4 MHz Z80 friendly).
+- **Pure Z80 assembly core** (`src/mdxnt_drv_z80.s`, 3,493 B `_CODE`, 0 B `_DATA`, 434 B `_BSS`):
+  - SDCC `--sdcccall 1` drop-in replacement for `src/mdxnt_drv.c` with bit-exact YM2203 OPN behavior.
 - **Thin PC-8801mkIISR Z80 HAL** (`hal/pc88_sr/mdxnt_hal_pc88.s`, ~110 bytes):
   - YM2203 port `0x44`/`0x45` busy-polling, Timer-B IRQ (`INT 4`) ack/setup, and Port `0x32`/`0xE4` shadow preservation.
 - **MML Compilers & Language Server**:
@@ -41,6 +43,7 @@ python3 tools/mdxnt_compile.py --header MY_BGM=examples/demo.mml -o out_mdxt.h
 ## Directory Layout
 - `include/mdxnt.h` — Public API & HAL hook declarations
 - `src/mdxnt_drv.c` — Portable C99 YM2203 OPN sound driver
+- `src/mdxnt_drv_z80.s` — Pure Z80 SDCC (`--sdcccall 1`) assembly driver (drop-in replacement for `mdxnt_drv.c`)
 - `hal/pc88_sr/mdxnt_hal_pc88.s` — PC-8801mkIISR Z80 SDCC HAL
 - `examples/demo.mml` — 6-channel (FM 3ch + SSG 3ch) demo track
 - `tools/mdxnt_compile.py` — Python 3 MDX-compatible MML compiler

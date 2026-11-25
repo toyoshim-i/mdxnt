@@ -31,6 +31,7 @@ tools: wasm vscode
 check-z80:
 	@mkdir -p build
 	sdasz80 -o build/mdxnt_hal_pc88.rel hal/pc88_sr/mdxnt_hal_pc88.s
+	sdasz80 -o build/mdxnt_drv_z80.rel src/mdxnt_drv_z80.s
 	sdcc -mz80 --sdcccall 1 --opt-code-size --max-allocs-per-node 10000 -Iinclude -c -o build/mdxnt_drv.rel src/mdxnt_drv.c
 
 clean:
