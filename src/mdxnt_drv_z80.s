@@ -69,6 +69,8 @@ _s_inited:
         .ds     1
 _s_se_active:
         .ds     1
+_s_blip_active:
+        .ds     1
 _sc_slot:
         .ds     1
 _sc_flags:
@@ -87,9 +89,15 @@ _sc_semi:
         .area   _INITIALIZED
 _s_ssg_mixer:
         .ds     1
+_s_ssg_nfreq:
+        .ds     1
+_s_ssg_tp_hi:
+        .ds     3
 
         .area   _INITIALIZER
         .db     0x38
+        .db     0xFF
+        .db     0xFF, 0xFF, 0xFF
 
         .area   _CODE
 ; -----------------------------------------------------------------------------
@@ -131,24 +139,55 @@ _neg_hl:
         ld      h, a
         ret
 
-; Portable symmetric (int16_t)HL / 16
+; Portable symmetric (int16_t)HL / 16 (nibble shift; preserves BC, IX)
 _div16_sym:
         bit     7, h
         jr      nz, _d16_neg
-        ld      b, #4
-_d16_pos_lp:
-        srl     h
-        rr      l
-        djnz    _d16_pos_lp
+_d16_pos:
+        ld      a, l
+        and     #0xF0
+        ld      l, a
+        ld      a, h
+        and     #0x0F
+        or      l
+        rrca
+        rrca
+        rrca
+        rrca
+        ld      l, a
+        ld      a, h
+        rrca
+        rrca
+        rrca
+        rrca
+        and     #0x0F
+        ld      h, a
         ret
 _d16_neg:
-        call    _neg_hl
-        ld      b, #4
-_d16_neg_lp:
-        srl     h
-        rr      l
-        djnz    _d16_neg_lp
-        jr      _neg_hl
+        ; For negative x, symmetric x/16 == (x + 15) >> 4 (arithmetic right shift)
+        ld      de, #15
+        add     hl, de
+        bit     7, h
+        jr      z, _d16_pos
+        ld      a, l
+        and     #0xF0
+        ld      l, a
+        ld      a, h
+        and     #0x0F
+        or      l
+        rrca
+        rrca
+        rrca
+        rrca
+        ld      l, a
+        ld      a, h
+        rrca
+        rrca
+        rrca
+        rrca
+        or      #0xF0
+        ld      h, a
+        ret
 
 ; Clamp signed HL to [256, 2047]
 _clamp_fm:
@@ -206,39 +245,40 @@ _lu16_ok:
         ld      l, a
         ret
 
-; Compute A = ssg_scaled_vol(vol=A, env_lvl=E) -> ((p + (p<<4) + 136) >> 8)
+; 256-byte LUT for ssg_scaled_vol(vol=0..15, env_lvl=0..15)
+_SSG_VOL_TBL:
+        .db      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+        .db      0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,  1,  1,  1,  1
+        .db      0,  0,  0,  0,  1,  1,  1,  1,  1,  1,  1,  1,  2,  2,  2,  2
+        .db      0,  0,  0,  1,  1,  1,  1,  1,  2,  2,  2,  2,  2,  3,  3,  3
+        .db      0,  0,  1,  1,  1,  1,  2,  2,  2,  2,  3,  3,  3,  3,  4,  4
+        .db      0,  0,  1,  1,  1,  2,  2,  2,  3,  3,  3,  4,  4,  4,  5,  5
+        .db      0,  0,  1,  1,  2,  2,  2,  3,  3,  4,  4,  4,  5,  5,  6,  6
+        .db      0,  0,  1,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,  6,  7,  7
+        .db      0,  1,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,  6,  7,  7,  8
+        .db      0,  1,  1,  2,  2,  3,  4,  4,  5,  5,  6,  7,  7,  8,  8,  9
+        .db      0,  1,  1,  2,  3,  3,  4,  5,  5,  6,  7,  7,  8,  9,  9, 10
+        .db      0,  1,  1,  2,  3,  4,  4,  5,  6,  7,  7,  8,  9, 10, 10, 11
+        .db      0,  1,  2,  2,  3,  4,  5,  6,  6,  7,  8,  9, 10, 10, 11, 12
+        .db      0,  1,  2,  3,  3,  4,  5,  6,  7,  8,  9, 10, 10, 11, 12, 13
+        .db      0,  1,  2,  3,  4,  5,  6,  7,  7,  8,  9, 10, 11, 12, 13, 14
+        .db      0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15
+
+; Compute A = ssg_scaled_vol(vol=A, env_lvl=E) via LUT (preserves BC, IX)
 _ssg_scaled_vol:
         and     #0x0F
         ret     z
-        ld      d, a
+        rlca
+        rlca
+        rlca
+        rlca
+        ld      l, a
         ld      a, e
         and     #0x0F
-        ret     z
-        ld      e, a
-        ; p = D * E (both 0..15 -> max 225 fits in 8 bits)
-        xor     a
-        ld      b, #4
-_sv_mul:
-        add     a, a
-        rl      d
-        bit     4, d
-        jr      z, _sv_skip
-        add     a, e
-_sv_skip:
-        djnz    _sv_mul
-        ; HL = p + (p << 4) + 136
-        ld      e, a
-        ld      d, #0
-        ld      l, a
-        ld      h, #0
-        add     hl, hl
-        add     hl, hl
-        add     hl, hl
-        add     hl, hl
-        add     hl, de
-        ld      de, #136
-        add     hl, de
-        ld      a, h
+        or      l
+        ld      hl, #_SSG_VOL_TBL
+        call    _lut_u8
+        ld      a, (hl)
         ret
 
 ; Return IY = &SSG_ENVS[min(voice, 5)] (clobbers A, DE)
@@ -277,8 +317,15 @@ _ch_ptr_a:
         add     hl, de
         ret
 
-; Safe opn write preserving C and IX/IY (A = reg, L = val)
+; Safe opn write preserving BC and IX (A = reg, L = val)
 _opn_wr:
+        push    bc
+        call    _mdxnt_opn_write
+        pop     bc
+        ret
+
+; Variant preserving IY for callers holding pointers in IY (e.g. _fm_load_voice)
+_opn_wr_iy:
         push    bc
         push    iy
         call    _mdxnt_opn_write
@@ -321,13 +368,23 @@ _swt_out:
         push    hl
         ld      a, c
         add     a, a
-        push    af
         call    _opn_wr         ; reg = c*2, val = l (lo)
-        pop     af
         pop     hl
+        ld      a, h
+        and     #0x0F
+        ld      d, a            ; D = hi
+        ld      hl, #_s_ssg_tp_hi
+        ld      a, c
+        call    _lut_u8
+        ld      a, d
+        cp      (hl)
+        ret     z               ; unchanged coarse byte -> skip reg c*2+1
+        ld      (hl), a
+        ld      l, a
+        ld      a, c
+        add     a, a
         inc     a
-        ld      l, h
-        jr      _opn_wr         ; reg = c*2+1, val = h (hi)
+        jp      _opn_wr         ; reg = c*2+1, val = hi
 
 ; ssg_apply_mixer(C = ssg_ch, D = mode, E = nfreq) (preserves C)
 _ssg_apply_mixer:
@@ -356,7 +413,6 @@ _sam_m0:
         or      h
         cpl
         or      l
-        ld      (_s_ssg_mixer), a
         jr      _sam_wr7
 _sam_m1:
         ; mode == 1: (mixer | tbit) & ~nbit
@@ -375,17 +431,31 @@ _sam_m2:
         cpl
         and     e
 _sam_wrn:
-        ld      (_s_ssg_mixer), a
+        ; A = next mixer; write reg 6 only if noise period changed
+        ld      h, a            ; save next mixer in H
         pop     de
         push    de
         ld      a, e
         and     #0x1F
+        ld      de, #_s_ssg_nfreq
         ld      l, a
+        ld      a, (de)
+        cp      l
+        jr      z, _sam_n_same
+        ld      a, l
+        ld      (de), a
+        push    hl              ; save next mixer in H
         ld      a, #6
         call    _opn_wr
+        pop     hl
+_sam_n_same:
+        ld      a, h            ; restore next mixer
 _sam_wr7:
         pop     de
-        ld      a, (_s_ssg_mixer)
+        ld      hl, #_s_ssg_mixer
+        cp      (hl)
+        ret     z               ; unchanged mixer -> skip reg 7
+        ld      (hl), a
         ld      l, a
         ld      a, #7
         jp      _opn_wr
@@ -576,6 +646,57 @@ _fat_wr:
         djnz    _fat_lp
         ret
 
+; fm_apply_carrier_tl(A = fm_ch, IX = c) — writes only carrier operator TL slots
+_fm_apply_carrier_tl:
+        push    af
+        ld      a, CH_FM_CON(ix)
+        and     #7
+        ld      hl, #_FM_CARRIER_MASK
+        call    _lut_u8
+        ld      d, (hl)         ; D = cmask
+        ld      a, CH_VOL(ix)
+        and     #15
+        ld      hl, #_FM_VOL_TL
+        call    _lut_u8
+        ld      e, (hl)         ; E = atten
+        pop     af
+        add     a, #0x40
+        ld      c, a            ; C = reg 0x40 + fm_ch
+        push    ix
+        pop     hl
+        push    de
+        ld      de, #CH_FM_TL
+        add     hl, de          ; HL = &fm_tl[0]
+        pop     de
+        ld      b, #4
+_fac_lp:
+        ld      a, (hl)
+        inc     hl
+        rrc     d
+        jr      nc, _fac_skip
+        add     a, e
+        jr      c, _fac_max
+        cp      #128
+        jr      c, _fac_wr
+_fac_max:
+        ld      a, #127
+_fac_wr:
+        push    hl
+        push    de
+        ld      l, a
+        ld      a, c
+        push    bc
+        call    _mdxnt_opn_write
+        pop     bc
+        pop     de
+        pop     hl
+_fac_skip:
+        ld      a, c
+        add     a, #4
+        ld      c, a
+        djnz    _fac_lp
+        ret
+
 ; fm_load_voice(A = fm_ch, IX = c, L = vnum)
 _fm_load_voice:
         ld      e, CH_VOICE_TBL(ix)
@@ -613,15 +734,13 @@ _flv_lp:
         ld      a, c
         add     a, #0x30
         ld      l, 0(iy)
-        call    _opn_wr
+        call    _opn_wr_iy
         ; c->fm_tl[op] = vp[4]
-        ld      a, 4(iy)
         push    ix
         pop     hl
         ld      e, #CH_FM_TL
         ld      d, #0
         add     hl, de
-        ; Wait: we need current op index 0..3 -> easiest if we advance HL or compute op = 4 - B!
         ld      a, #4
         sub     b
         ld      e, a
@@ -632,22 +751,22 @@ _flv_lp:
         ld      a, c
         add     a, #0x50
         ld      l, 8(iy)
-        call    _opn_wr
+        call    _opn_wr_iy
         ; DR: 0x60 + off, vp[12]
         ld      a, c
         add     a, #0x60
         ld      l, 12(iy)
-        call    _opn_wr
+        call    _opn_wr_iy
         ; SR: 0x70 + off, vp[16]
         ld      a, c
         add     a, #0x70
         ld      l, 16(iy)
-        call    _opn_wr
+        call    _opn_wr_iy
         ; SL/RR: 0x80 + off, vp[20]
         ld      a, c
         add     a, #0x80
         ld      l, 20(iy)
-        call    _opn_wr
+        call    _opn_wr_iy
         pop     bc
         inc     iy              ; vp++
         ld      a, c
@@ -662,7 +781,7 @@ _flv_lp:
         ld      CH_FM_CON(ix), a
         ld      a, (_sc_hw)
         add     a, #0xB0
-        call    _opn_wr
+        call    _opn_wr_iy
         pop     iy
         ld      a, (_sc_hw)
         jp      _fm_apply_tl_clean
@@ -768,28 +887,49 @@ _cr_act0:
         ld      CH_LFO_DIR(ix), #1
         ret
 
-; step_ssg_env(IX = c, C = hw_ch, flags bit2 = can_out)
+; step_ssg_env(IX = c, C = hw_ch, flags bit2 = can_out) — HL inline, no IY, early ret
 _step_ssg_env:
         ld      a, CH_ENV_PHASE(ix)
         or      a
         ret     z
-        push    iy
-        ld      d, CH_ENV_LVL(ix)       ; D = prev_lvl
-        push    de
-        call    _get_env_preset         ; IY = ep (al, ar, dr, sl, sr, rr)
-        pop     de                      ; D = prev_lvl
-        ld      a, CH_ENV_PHASE(ix)
+        ld      b, a                    ; B = phase
+        ; Compute HL = &_SSG_ENVS[min(voice, 5) * 6]
+        ld      a, CH_VOICE(ix)
+        cp      #6
+        jr      c, _sse_vok
+        xor     a
+_sse_vok:
+        ld      e, a
+        add     a, a                    ; *2
+        add     a, e                    ; *3
+        add     a, a                    ; *6
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_SSG_ENVS
+        add     hl, de                  ; HL = ep (0=al,1=ar,2=dr,3=sl,4=sr,5=rr)
+        ld      a, b
+        cp      #ENV_SUS
+        jr      z, _sse_sus
+        cp      #ENV_DEC
+        jr      z, _sse_dec
+        cp      #ENV_REL
+        jp      z, _sse_rel
         cp      #ENV_ATK
-        jr      nz, _sse_chk_dec
-        ld      a, CH_ENV_LVL(ix)
-        add     a, 1(iy)                ; + ep->ar
+        ret     nz
+        ; ENV_ATK
+        inc     hl                      ; HL -> ar
+        ld      d, CH_ENV_LVL(ix)       ; D = prev_lvl
+        ld      a, d
+        add     a, (hl)                 ; + ar
         cp      #15
         jr      c, _sse_atk_nc
         ld      CH_ENV_LVL(ix), #15
-        ld      a, 2(iy)                ; dr
+        inc     hl                      ; HL -> dr
+        ld      a, (hl)
         or      a
         jr      z, _sse_set_sus
-        ld      a, 3(iy)                ; sl
+        inc     hl                      ; HL -> sl
+        ld      a, (hl)
         cp      #15
         jr      nc, _sse_set_sus
         ld      a, #ENV_DEC
@@ -799,86 +939,100 @@ _sse_set_sus:
 _sse_set_ph:
         ld      CH_ENV_PHASE(ix), a
         ld      CH_ENV_CNT(ix), #0
-        jp      _sse_done
+        ld      a, #15
+        cp      d
+        ret     z
+        jp      _ssg_sync_vol
 _sse_atk_nc:
+        cp      d
+        ret     z
         ld      CH_ENV_LVL(ix), a
-        jp      _sse_done
-_sse_chk_dec:
-        cp      #ENV_DEC
-        jr      nz, _sse_chk_sus
+        jp      _ssg_sync_vol
+
+_sse_dec:
+        inc     hl
+        inc     hl                      ; HL -> dr
         ld      a, CH_ENV_CNT(ix)
         inc     a
         ld      CH_ENV_CNT(ix), a
-        cp      2(iy)                   ; dr
-        jr      c, _sse_done
+        cp      (hl)                    ; < dr?
+        ret     c
         ld      CH_ENV_CNT(ix), #0
+        inc     hl                      ; HL -> sl
+        ld      e, (hl)                 ; E = sl
         ld      a, CH_ENV_LVL(ix)
-        ld      e, 3(iy)                ; sl
         cp      e
-        jr      z, _sse_dec_le
-        jr      c, _sse_dec_le
+        jr      z, _sse_dec_eq
+        jr      c, _sse_dec_lt
         dec     a
         ld      CH_ENV_LVL(ix), a
         cp      e
-        jr      z, _sse_dec_le
-        jr      nc, _sse_done
-_sse_dec_le:
+        jr      nz, _ssg_sync_vol
+        ld      CH_ENV_PHASE(ix), #ENV_SUS
+        jr      _ssg_sync_vol
+_sse_dec_eq:
+        ld      CH_ENV_PHASE(ix), #ENV_SUS
+        ret
+_sse_dec_lt:
         ld      CH_ENV_LVL(ix), e
         ld      CH_ENV_PHASE(ix), #ENV_SUS
-        jr      _sse_done
-_sse_chk_sus:
-        cp      #ENV_SUS
-        jr      nz, _sse_chk_rel
-        ld      a, 4(iy)                ; sr
+        jr      _ssg_sync_vol
+
+_sse_sus:
+        ld      de, #4
+        add     hl, de                  ; HL -> sr
+        ld      e, (hl)                 ; E = sr
+        ld      a, e
         or      a
-        jr      z, _sse_done
+        ret     z
         ld      a, CH_ENV_LVL(ix)
         or      a
-        jr      z, _sse_done
+        ret     z
         ld      a, CH_ENV_CNT(ix)
         inc     a
         ld      CH_ENV_CNT(ix), a
-        cp      4(iy)                   ; sr
-        jr      c, _sse_done
+        cp      e                       ; < sr?
+        ret     c
         ld      CH_ENV_CNT(ix), #0
         dec     CH_ENV_LVL(ix)
-        jr      _sse_done
-_sse_chk_rel:
-        cp      #ENV_REL
-        jr      nz, _sse_done
-        ld      a, 5(iy)                ; rr
+        jr      _ssg_sync_vol
+
+_sse_rel:
+        ld      de, #5
+        add     hl, de                  ; HL -> rr
+        ld      e, (hl)                 ; E = rr
+        ld      a, e
         or      a
         jr      nz, _sse_rel_cnt
-        ld      CH_ENV_LVL(ix), #0
         ld      CH_ENV_PHASE(ix), #ENV_OFF
-        jr      _sse_done
+        ld      a, CH_ENV_LVL(ix)
+        or      a
+        ret     z
+        ld      CH_ENV_LVL(ix), #0
+        jr      _ssg_sync_vol
 _sse_rel_cnt:
         ld      a, CH_ENV_CNT(ix)
         inc     a
         ld      CH_ENV_CNT(ix), a
-        cp      5(iy)                   ; rr
-        jr      c, _sse_done
+        cp      e                       ; < rr?
+        ret     c
         ld      CH_ENV_CNT(ix), #0
         ld      a, CH_ENV_LVL(ix)
         or      a
-        jr      z, _sse_rel_zero
+        jr      z, _sse_rel_end
         dec     a
         ld      CH_ENV_LVL(ix), a
-_sse_rel_zero:
-        or      a
-        jr      nz, _sse_done
+        jr      nz, _ssg_sync_vol
         ld      CH_ENV_PHASE(ix), #ENV_OFF
-_sse_done:
-        pop     iy
-        ld      a, CH_ENV_LVL(ix)
-        cp      d                       ; == prev_lvl?
-        ret     z
+        jr      _ssg_sync_vol
+_sse_rel_end:
+        ld      CH_ENV_PHASE(ix), #ENV_OFF
+        ret
+
 _ssg_sync_vol:
         ld      e, CH_ENV_LVL(ix)
         ld      a, CH_VOL(ix)
-        push    bc
-        call    _ssg_scaled_vol
-        pop     bc
+        call    _ssg_scaled_vol         ; preserves BC, IX
         cp      CH_CUR_VOL(ix)
         ret     z
         ld      CH_CUR_VOL(ix), a
@@ -888,76 +1042,41 @@ _ssg_sync_vol:
         jp      _ssg_write_vol
 
 ; -----------------------------------------------------------------------------
-; step_channel(A = slot)
+; step_channel_ix(IX = c, C = hw_ch, A = flags [bit0=is_fm, bit1=is_se, bit2=can_out])
 ; -----------------------------------------------------------------------------
-_step_channel:
-        ld      (_sc_slot), a
-        call    _ch_ptr_a
-        push    hl
-        pop     ix
-        ld      a, CH_ACTIVE(ix)
-        or      a
-        ret     z
-
-        ; Compute _sc_flags (bit0=is_fm, bit1=is_se, bit2=can_out) and _sc_hw
-        ld      a, (_sc_slot)
-        cp      #3
-        jr      nc, _sc_not_fm
-        ld      (_sc_hw), a
-        ld      c, a
-        ld      a, #0x05                ; is_fm=1, can_out=1
+_step_channel_ix:
         ld      (_sc_flags), a
-        jr      _sc_chk_wait
-_sc_not_fm:
-        cp      #6
-        jr      c, _sc_ssg_bgm
-        sub     #5
+        ld      a, c
         ld      (_sc_hw), a
-        ld      c, a
-        call    _ssg_ch_owned_by_se
-        ld      e, #0x02                ; is_se=1
-        jr      _sc_set_fl
-_sc_ssg_bgm:
-        sub     #3
-        ld      (_sc_hw), a
-        ld      c, a
-        call    _ssg_ch_owned_by_bgm
-        ld      e, #0x00
-_sc_set_fl:
-        or      a
-        jr      z, _sc_fl_nco
-        set     2, e                    ; can_out=1
-_sc_fl_nco:
-        ld      a, e
-        ld      (_sc_flags), a
 
-_sc_chk_wait:
-        ; Check if wait > 1
-        ld      l, CH_WAIT(ix)
-        ld      h, CH_WAIT+1(ix)
-        ld      a, h
+        ; Fast 8-bit check for wait > 1 (CH_WAIT+1 == 0 on 99.6% of ticks)
+        ld      a, CH_WAIT+1(ix)
         or      a
-        jr      nz, _sc_ongoing
-        ld      a, l
+        jr      nz, _sc_wait_hi
+        ld      a, CH_WAIT(ix)
         cp      #2
         jp      c, _sc_fetch_start
-
-_sc_ongoing:
+        dec     a
+        ld      CH_WAIT(ix), a
+        jr      _sc_ongoing_body
+_sc_wait_hi:
+        ld      l, CH_WAIT(ix)
+        ld      h, a
         dec     hl
         ld      CH_WAIT(ix), l
         ld      CH_WAIT+1(ix), h
+
+_sc_ongoing_body:
         ld      a, CH_KEY_ON(ix)
         or      a
         jp      z, _sc_on_env
 
-        ld      hl, #_sc_flags
-        res     3, (hl)                 ; freq_dirty = 0
-        ; sweep
+        ; sweep (bit 3 of _sc_flags is guaranteed 0 on entry)
         ld      e, CH_SWEEP(ix)
         ld      d, CH_SWEEP+1(ix)
         ld      a, d
         or      e
-        jr      z, _sc_on_lfo
+        jr      z, _sc_on_lfo_clean
         ld      l, CH_CUR_FREQ(ix)
         ld      h, CH_CUR_FREQ+1(ix)
         add     hl, de
@@ -973,10 +1092,18 @@ _sc_sw_st:
         ld      CH_CUR_FREQ+1(ix), h
         ld      hl, #_sc_flags
         set     3, (hl)
+        jr      _sc_on_lfo
+_sc_on_lfo_clean:
+        ; Fast path: sweep == 0; if LFO is also off, skip _sc_on_fdirty completely
+        ld      a, CH_LFO_ON(ix)
+        or      a
+        jp      z, _sc_on_gate
+        jr      _sc_lfo_active
 _sc_on_lfo:
         ld      a, CH_LFO_ON(ix)
         or      a
         jr      z, _sc_on_fdirty
+_sc_lfo_active:
         ld      a, CH_LFO_D_CNT(ix)
         or      a
         jr      z, _sc_lfo_step
@@ -1034,28 +1161,20 @@ _sc_on_fdirty:
         add     hl, de
         call    _clamp_fm
         ld      b, CH_CUR_BLK(ix)
-        ld      a, (_sc_hw)
-        ld      c, a
-        call    _fm_write_freq
+        call    _fm_write_freq          ; C already holds hw_ch
         jr      _sc_on_gate
 _sc_fdirty_ssg:
         bit     2, a
         jr      z, _sc_on_gate
         call    _ssg_eff_tp
-        ld      a, (_sc_hw)
-        ld      c, a
-        call    _ssg_write_tone
+        call    _ssg_write_tone         ; C already holds hw_ch
 _sc_on_gate:
-        ld      l, CH_GATE(ix)
-        ld      h, CH_GATE+1(ix)
-        ld      a, h
-        or      l
+        ; CH_GATE is mathematically bounded to 0..255 (CH_GATE+1 is always 0)
+        ld      a, CH_GATE(ix)
+        or      a
         jr      z, _sc_on_env
-        dec     hl
-        ld      CH_GATE(ix), l
-        ld      CH_GATE+1(ix), h
-        ld      a, h
-        or      l
+        dec     a
+        ld      CH_GATE(ix), a
         jr      nz, _sc_on_env
         ld      a, CH_TIE(ix)
         or      a
@@ -1064,9 +1183,9 @@ _sc_on_gate:
         ld      a, (_sc_flags)
         bit     0, a
         jr      z, _sc_gate_rel
-        ld      a, (_sc_hw)
+        ld      a, c                    ; C holds hw_ch
         call    _fm_key_off
-        jr      _sc_on_env
+        ret                             ; FM has no SSG envelope
 _sc_gate_rel:
         ld      CH_ENV_PHASE(ix), #ENV_REL
         ld      CH_ENV_CNT(ix), #0
@@ -1074,9 +1193,7 @@ _sc_on_env:
         ld      a, (_sc_flags)
         bit     0, a
         ret     nz
-        ld      a, (_sc_hw)
-        ld      c, a
-        jp      _step_ssg_env
+        jp      _step_ssg_env           ; C already holds hw_ch
 
 ; 2. Command fetch loop (guard = 64)
 _sc_fetch_start:
@@ -1148,15 +1265,24 @@ _sc_not_rest:
         ld      CH_WAIT(ix), e
         ld      CH_WAIT+1(ix), d
 
-        ; oct & semi
+        ; oct & semi (3-step binary split for 0..95)
         ld      a, b
         ld      c, #0
-_sc_oct_lp:
+        cp      #48
+        jr      c, _sc_oct_24
+        sub     #48
+        ld      c, #4
+_sc_oct_24:
+        cp      #24
+        jr      c, _sc_oct_12
+        sub     #24
+        inc     c
+        inc     c
+_sc_oct_12:
         cp      #12
         jr      c, _sc_oct_ok
         sub     #12
         inc     c
-        jr      _sc_oct_lp
 _sc_oct_ok:
         ld      (_sc_semi), a
         ld      a, c
@@ -1327,14 +1453,19 @@ _sc_ssg_oct_last:
         jr      nc, _sc_ssg_oct_done
         inc     hl
 _sc_ssg_oct_done:
+        ld      e, CH_DETUNE(ix)
+        ld      d, CH_DETUNE+1(ix)
+        ld      a, d
+        or      e
+        jr      z, _sc_ssg_nodet
         push    hl
-        ld      l, CH_DETUNE(ix)
-        ld      h, CH_DETUNE+1(ix)
+        ex      de, hl
         call    _div16_sym
         ex      de, hl
         pop     hl
         or      a
         sbc     hl, de
+_sc_ssg_nodet:
         call    _clamp_ssg16
         ld      CH_CUR_FREQ(ix), l
         ld      CH_CUR_FREQ+1(ix), h
@@ -1483,7 +1614,7 @@ _ext_vset:
         bit     0, a
         jr      z, _ext_vssg
         ld      a, (_sc_hw)
-        call    _fm_apply_tl_clean
+        call    _fm_apply_carrier_tl
         jp      _sc_fetch_lp
 _ext_vssg:
         ld      a, (_sc_hw)
@@ -1706,23 +1837,37 @@ _scs_ssg:
 ; -----------------------------------------------------------------------------
 _mdxnt_tick_isr::
         push    ix
-        push    iy
         call    _mdxnt_hw_ack_timer_b
-        ; 1. Service queued one-shot SSG voice blips (0..2)
+
+        ; 1. Service queued one-shot SSG voice blips (0..2) only when active
+        ld      a, (_s_blip_active)
+        or      a
+        jr      z, _ti_no_blip
+        push    iy
         ld      iy, #_s_blip
         ld      c, #0
+        ld      b, #0                   ; B = any blip still active after this tick
 _ti_blp:
         ld      a, BLIP_PENDING(iy)
         or      a
         jr      z, _ti_chk_t
         ld      BLIP_PENDING(iy), #0
+        ld      b, #1
+        push    bc
+        push    iy
         ld      de, #0x000C
         call    _ssg_apply_mixer
+        pop     iy
+        push    iy
         ld      l, BLIP_TP(iy)
         ld      h, BLIP_TP+1(iy)
         call    _ssg_write_tone
+        pop     iy
+        push    iy
         ld      a, BLIP_VOL(iy)
         call    _ssg_write_vol
+        pop     iy
+        pop     bc
         jr      _ti_bnxt
 _ti_chk_t:
         ld      a, BLIP_TICKS(iy)
@@ -1732,15 +1877,27 @@ _ti_chk_t:
         ld      BLIP_TICKS(iy), a
         cp      #1
         jr      nz, _ti_chk0
+        ld      b, #1
+        push    bc
+        push    iy
         ld      a, BLIP_VOL(iy)
         srl     a
         call    _ssg_write_vol
+        pop     iy
+        pop     bc
         jr      _ti_bnxt
 _ti_chk0:
         or      a
-        jr      nz, _ti_bnxt
+        jr      z, _ti_brest
+        ld      b, #1
+        jr      _ti_bnxt
+_ti_brest:
+        push    bc
+        push    iy
         ld      a, c
         call    _ssg_restore_channel
+        pop     iy
+        pop     bc
 _ti_bnxt:
         ld      de, #BLIP_SIZE
         add     iy, de
@@ -1748,16 +1905,95 @@ _ti_bnxt:
         ld      a, c
         cp      #3
         jr      c, _ti_blp
+        ld      a, b
+        ld      (_s_blip_active), a
+        pop     iy
 
-        ; 2. Step BGM (0..5) and SE (6..7)
-        xor     a
-_ti_clp:
-        push    af
-        call    _step_channel
-        pop     af
-        inc     a
-        cp      #8
-        jr      c, _ti_clp
+_ti_no_blip:
+        ; 2a. Step FM BGM channels (0..2) via IX pointer stepping
+        ld      ix, #_s_ch
+        ld      c, #0
+_ti_fm_lp:
+        ld      a, CH_ACTIVE(ix)
+        or      a
+        jr      z, _ti_fm_nxt
+        push    bc
+        ld      a, #0x05                ; is_fm=1, can_out=1
+        call    _step_channel_ix
+        pop     bc
+_ti_fm_nxt:
+        ld      de, #CH_SIZE
+        add     ix, de
+        inc     c
+        ld      a, c
+        cp      #3
+        jr      c, _ti_fm_lp
+
+        ; 2b. Step SSG BGM channels (3..5); IX is already &_s_ch[3]
+        ld      a, (_s_blip_active)
+        ld      hl, #_s_se_active
+        or      (hl)
+        ld      b, a                    ; B == 0 => all 3 SSG BGM channels guaranteed owned
+        ld      c, #0
+_ti_ssg_lp:
+        ld      a, CH_ACTIVE(ix)
+        or      a
+        jr      z, _ti_ssg_nxt
+        push    bc
+        ld      a, b
+        or      a
+        jr      nz, _ti_ssg_chk_own
+        ld      a, #0x04                ; is_fm=0, is_se=0, can_out=1
+        jr      _ti_ssg_go
+_ti_ssg_chk_own:
+        ld      a, c
+        call    _ssg_ch_owned_by_bgm
+        ld      a, #0x00
+        jr      z, _ti_ssg_go
+        ld      a, #0x04
+_ti_ssg_go:
+        call    _step_channel_ix
+        pop     bc
+_ti_ssg_nxt:
+        ld      de, #CH_SIZE
+        add     ix, de
+        inc     c
+        ld      a, c
+        cp      #3
+        jr      c, _ti_ssg_lp
+
+        ; 2c. Step SE channels (6..7) only when _s_se_active != 0; IX is already &_s_ch[6]
+        ld      a, (_s_se_active)
+        or      a
+        jr      z, _ti_done
+        ld      c, #1                   ; SE ch 6 -> hw SSG ch 1, ch 7 -> hw SSG ch 2
+_ti_se_lp:
+        ld      a, CH_ACTIVE(ix)
+        or      a
+        jr      z, _ti_se_nxt
+        push    bc
+        ld      a, (_s_blip_active)
+        or      a
+        jr      nz, _ti_se_chk_own
+        ld      a, #0x06                ; is_se=1, can_out=1
+        jr      _ti_se_go
+_ti_se_chk_own:
+        ld      a, c
+        call    _ssg_ch_owned_by_se
+        or      a
+        ld      a, #0x02                ; is_se=1, can_out=0
+        jr      z, _ti_se_go
+        ld      a, #0x06                ; is_se=1, can_out=1
+_ti_se_go:
+        call    _step_channel_ix
+        pop     bc
+_ti_se_nxt:
+        ld      de, #CH_SIZE
+        add     ix, de
+        inc     c
+        ld      a, c
+        cp      #3
+        jr      c, _ti_se_lp
 
         ld      a, (_s_ch + 6 * CH_SIZE + CH_ACTIVE)
         ld      hl, #_s_ch + 7 * CH_SIZE + CH_ACTIVE
@@ -1766,7 +2002,7 @@ _ti_clp:
         ld      a, #1
 _ti_sa0:
         ld      (_s_se_active), a
-        pop     iy
+_ti_done:
         pop     ix
         ret
 
@@ -1780,8 +2016,14 @@ _mdxnt_init::
         ldir
         xor     a
         ld      (_s_se_active), a
+        ld      (_s_blip_active), a
         ld      a, #0x38
         ld      (_s_ssg_mixer), a
+        ld      a, #0xFF
+        ld      (_s_ssg_nfreq), a
+        ld      (_s_ssg_tp_hi), a
+        ld      (_s_ssg_tp_hi + 1), a
+        ld      (_s_ssg_tp_hi + 2), a
         ; YM2203 prescaler 1/6 FM + 1/4 SSG
         ld      a, #0x2D
         ld      l, #0
@@ -2142,6 +2384,8 @@ _blp_tok:
         ld      a, 4(ix)
         and     #0x0F
         ld      (hl), a                 ; vol
+        ld      a, #1
+        ld      (_s_blip_active), a
         call    _mdxnt_leave_crit
 _blp_ret:
         pop     ix

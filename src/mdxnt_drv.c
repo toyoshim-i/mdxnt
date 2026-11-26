@@ -122,6 +122,8 @@ typedef struct {
 static MdxntCh      s_ch[MDXNT_TOTAL_CH];
 static SsgBlipSlot s_blip[3];
 static uint8_t     s_ssg_mixer = 0x38u; /* Tone A/B/C ON, Noise OFF */
+static uint8_t     s_ssg_nfreq = 0xFFu;
+static uint8_t     s_ssg_tp_hi[3] = { 0xFFu, 0xFFu, 0xFFu };
 static uint8_t     s_inited = 0u;
 static uint8_t     s_se_active = 0u;
 
@@ -141,10 +143,15 @@ static int16_t read_s16(const uint8_t *p)
 static void ssg_write_tone(uint8_t ssg_ch, uint16_t tp)
 {
     uint8_t r = (uint8_t)(ssg_ch << 1);
+    uint8_t hi;
     if (tp > 4095u) tp = 4095u;
     if (tp < 1u) tp = 1u;
     mdxnt_opn_write(r, (uint8_t)(tp & 0xFFu));
-    mdxnt_opn_write((uint8_t)(r + 1u), (uint8_t)((tp >> 8) & 0x0Fu));
+    hi = (uint8_t)((tp >> 8) & 0x0Fu);
+    if (hi != s_ssg_tp_hi[ssg_ch]) {
+        s_ssg_tp_hi[ssg_ch] = hi;
+        mdxnt_opn_write((uint8_t)(r + 1u), hi);
+    }
 }
 
 static void ssg_write_vol(uint8_t ssg_ch, uint8_t vol)
@@ -156,17 +163,26 @@ static void ssg_apply_mixer(uint8_t ssg_ch, uint8_t mode, uint8_t nfreq)
 {
     uint8_t tbit = (uint8_t)(1u << ssg_ch);
     uint8_t nbit = (uint8_t)(8u << ssg_ch);
+    uint8_t next;
     /* Active-low mixer bits: 0 = enabled, 1 = disabled */
     if (mode == 0u) {
-        s_ssg_mixer = (uint8_t)((s_ssg_mixer & (uint8_t)~tbit) | nbit);
-    } else if (mode == 1u) {
-        s_ssg_mixer = (uint8_t)((s_ssg_mixer | tbit) & (uint8_t)~nbit);
-        mdxnt_opn_write(6u, (uint8_t)(nfreq & 0x1Fu));
+        next = (uint8_t)((s_ssg_mixer & (uint8_t)~tbit) | nbit);
     } else {
-        s_ssg_mixer = (uint8_t)(s_ssg_mixer & (uint8_t)~(tbit | nbit));
-        mdxnt_opn_write(6u, (uint8_t)(nfreq & 0x1Fu));
+        uint8_t nf = (uint8_t)(nfreq & 0x1Fu);
+        if (mode == 1u) {
+            next = (uint8_t)((s_ssg_mixer | tbit) & (uint8_t)~nbit);
+        } else {
+            next = (uint8_t)(s_ssg_mixer & (uint8_t)~(tbit | nbit));
+        }
+        if (nf != s_ssg_nfreq) {
+            s_ssg_nfreq = nf;
+            mdxnt_opn_write(6u, nf);
+        }
     }
-    mdxnt_opn_write(7u, s_ssg_mixer);
+    if (next != s_ssg_mixer) {
+        s_ssg_mixer = next;
+        mdxnt_opn_write(7u, next);
+    }
 }
 
 static void fm_apply_tl(uint8_t fm_ch, const MdxntCh *c)
@@ -182,6 +198,20 @@ static void fm_apply_tl(uint8_t fm_ch, const MdxntCh *c)
             tl = (uint8_t)v;
         }
         mdxnt_opn_write((uint8_t)(0x40u + (op << 2) + fm_ch), tl);
+    }
+}
+
+static void fm_apply_carrier_tl(uint8_t fm_ch, const MdxntCh *c)
+{
+    uint8_t cmask = FM_CARRIER_MASK[c->fm_con & 7u];
+    uint8_t atten = FM_VOL_TL[c->vol & 15u];
+    uint8_t op;
+    for (op = 0u; op < 4u; ++op) {
+        if (cmask & (uint8_t)(1u << op)) {
+            uint16_t v = (uint16_t)c->fm_tl[op] + atten;
+            if (v > 127u) v = 127u;
+            mdxnt_opn_write((uint8_t)(0x40u + (op << 2) + fm_ch), (uint8_t)v);
+        }
     }
 }
 
@@ -633,15 +663,15 @@ static void step_channel(uint8_t slot)
             }
         } else if (cmd == 0xFBu) {
             c->vol = (uint8_t)(*c->ptr++ & 15u);
-            if (is_fm) fm_apply_tl(hw_ch, c);
+            if (is_fm) fm_apply_carrier_tl(hw_ch, c);
             else ssg_sync_vol(c, hw_ch, can_out);
         } else if (cmd == 0xFAu) {
             if (c->vol > 0u) --c->vol;
-            if (is_fm) fm_apply_tl(hw_ch, c);
+            if (is_fm) fm_apply_carrier_tl(hw_ch, c);
             else ssg_sync_vol(c, hw_ch, can_out);
         } else if (cmd == 0xF9u) {
             if (c->vol < 15u) ++c->vol;
-            if (is_fm) fm_apply_tl(hw_ch, c);
+            if (is_fm) fm_apply_carrier_tl(hw_ch, c);
             else ssg_sync_vol(c, hw_ch, can_out);
         } else if (cmd == 0xF8u) {
             c->q = *c->ptr++;
@@ -780,9 +810,11 @@ void mdxnt_init(void)
     for (i = 0u; i < 3u; ++i) {
         s_blip[i].pending = 0u;
         s_blip[i].ticks = 0u;
+        s_ssg_tp_hi[i] = 0xFFu;
     }
     s_se_active = 0u;
     s_ssg_mixer = 0x38u;
+    s_ssg_nfreq = 0xFFu;
 
     /* Guarantee YM2203 prescaler 1/6 FM + 1/4 SSG on warm boot */
     mdxnt_opn_write(0x2Du, 0u);

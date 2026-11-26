@@ -16,24 +16,19 @@
 ; -----------------------------------------------------------------------------
 _mdxnt_opn_write::
         ld      d, a            ; D = reg
-        ld      e, l            ; E = val
         ld      b, #16
 _mo_w1:
         in      a, (0x44)
         rlca
-        jr      nc, _mo_a1
+        jp      nc, _mo_a1
         djnz    _mo_w1
 _mo_a1:
         ld      a, d
         out     (0x44), a
-        ld      b, #16
-_mo_w2:
-        in      a, (0x44)
-        rlca
-        jr      nc, _mo_a2
-        djnz    _mo_w2
-_mo_a2:
-        ld      a, e
+        ; YM2203 address-to-data settle delay (>= 17 cycles @ 3.9936 MHz)
+        ld      a, l            ; 4T
+        jr      .+2             ; 12T
+        nop                     ; 4T (20T + out/out strobe overhead >= 26T)
         out     (0x45), a
         ret
 
