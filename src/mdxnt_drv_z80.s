@@ -60,13 +60,11 @@ BLIP_TP         = 2
 BLIP_VOL        = 4
 BLIP_SIZE       = 5
 
-        .area   _BSS
+        .area   _DATA
 _s_ch:
         .ds     8 * CH_SIZE     ; 408 B
 _s_blip:
         .ds     3 * BLIP_SIZE   ; 15 B
-_s_ssg_mixer:
-        .ds     1
 _s_inited:
         .ds     1
 _s_se_active:
@@ -85,6 +83,13 @@ _sc_oct:
         .ds     1
 _sc_semi:
         .ds     1
+
+        .area   _INITIALIZED
+_s_ssg_mixer:
+        .ds     1
+
+        .area   _INITIALIZER
+        .db     0x38
 
         .area   _CODE
 ; -----------------------------------------------------------------------------
@@ -275,7 +280,9 @@ _ch_ptr_a:
 ; Safe opn write preserving C and IX/IY (A = reg, L = val)
 _opn_wr:
         push    bc
+        push    iy
         call    _mdxnt_opn_write
+        pop     iy
         pop     bc
         ret
 
@@ -336,12 +343,15 @@ _sam_sh:
         add     a, a
         add     a, a
         ld      l, a            ; L = nbit = 8 << ssg_ch
-        ld      a, (_s_ssg_mixer)
-        bit     0, d
-        jr      nz, _sam_m1
-        bit     1, d
-        jr      nz, _sam_m2
+        ld      a, d
+        or      a
+        jr      z, _sam_m0
+        dec     a
+        jr      z, _sam_m1
+        jr      _sam_m2
+_sam_m0:
         ; mode == 0: (mixer & ~tbit) | nbit
+        ld      a, (_s_ssg_mixer)
         cpl
         or      h
         cpl
@@ -350,6 +360,7 @@ _sam_sh:
         jr      _sam_wr7
 _sam_m1:
         ; mode == 1: (mixer | tbit) & ~nbit
+        ld      a, (_s_ssg_mixer)
         or      h
         cpl
         or      l
@@ -357,6 +368,7 @@ _sam_m1:
         jr      _sam_wrn
 _sam_m2:
         ; mode >= 2: mixer & ~(tbit | nbit)
+        ld      a, (_s_ssg_mixer)
         ld      e, a
         ld      a, h
         or      l
@@ -376,7 +388,7 @@ _sam_wr7:
         ld      a, (_s_ssg_mixer)
         ld      l, a
         ld      a, #7
-        jr      _opn_wr
+        jp      _opn_wr
 
 ; ssg_eff_tp(IX = c) -> returns uint16_t in HL
 _ssg_eff_tp:
@@ -398,6 +410,7 @@ _set_clamp:
 
 ; ssg_ch_owned_by_bgm(A = ssg_ch) -> Z if NOT owned, NZ (A=1) if owned (preserves C)
 _ssg_ch_owned_by_bgm:
+        ld      b, a
         ld      e, a
         add     a, a
         add     a, a
@@ -410,7 +423,7 @@ _ssg_ch_owned_by_bgm:
         inc     hl
         or      (hl)            ; | ticks
         jr      nz, _scob_no
-        ld      a, c
+        ld      a, b
         cp      #1
         jr      nz, _scob_c2
         ld      a, (_s_ch + 6 * CH_SIZE + CH_ACTIVE)
@@ -425,6 +438,7 @@ _scob_c2:
         jr      nz, _scob_no
 _scob_yes:
         ld      a, #1
+        or      a
         ret
 _scob_no:
         xor     a
@@ -1482,7 +1496,7 @@ _ext_fa:
         jr      nz, _ext_f9
         ld      a, CH_VOL(ix)
         or      a
-        jp      z, _sc_fetch_lp
+        jr      z, _ext_vset
         dec     a
         jr      _ext_vset
 
@@ -1491,7 +1505,7 @@ _ext_f9:
         jr      nz, _ext_f8
         ld      a, CH_VOL(ix)
         cp      #15
-        jp      nc, _sc_fetch_lp
+        jr      nc, _ext_vset
         inc     a
         jr      _ext_vset
 
